@@ -1,8 +1,8 @@
 # condor/run.py configs/sapiens/segment_ava256.gin
 # condor/submit.py configs/sapiens/segment_ava256.gin 25
 
-INPUT = "/fast/mprinzler/gintern/datasets/ava-256"
-OUTPUT = "/fast/mprinzler/gintern/datasets/ava-256_sapiens_segmentations_debug/framestride_10"
+INPUT = "data/ava-256"
+OUTPUT = "data/sapiens_segmentations_debug/ava-256/framestride_10"
 FRAME_STRIDE = 10
 SUBJECTS = "INQ807 KWL586"
 CAMERAS = "400939 400943"

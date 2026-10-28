@@ -23,13 +23,13 @@ if __name__ == '__main__':
     dataloader = MultiDataLoader(dataloader_kwargs=dict(shuffle=True, batch_size=3),
                                  dataset_configs=[
                                     ('ava256', dict(
-                                        root_path='/fast/mprinzler/gintern/datasets/ava-256', 
+                                        root_path='data/ava-256', 
                                         max_captures=max_captures, 
                                         # cameras_specified=cam_ids, 
                                         # frames_per_subject=1, 
                                         # deterministic_shuffle=True,
                                         # stage1_directory='/fast/mprinzler/gintern/datasets/ava-256_gtuvmaps_framestride10/ava_framestride10_correctuv',
-                                        sapiens_segmentation_directory='/fast/mprinzler/gintern/datasets/ava-256_sapiens_segmentations/framestride_10/sapiens_1b',
+                                        sapiens_segmentation_directory='data/sapiens_segmentations/ava-256/framestride_10/sapiens_1b',
                                         uv_directory='/fast/mprinzler/gintern/datasets/ava-256_uvpredictions/easyava256_tempeh_860k_framestride10/ava',
                                         stage1_directory = '/fast/mprinzler/gintern/datasets/ava-256_uvpredictions/easyava256_tempeh_860k_framestride10/ava',
                                         use_gt_uvmaps=False,
@@ -67,7 +67,7 @@ if __name__ == '__main__':
                                         head_crop_height=512,
                                         head_crop_width=512,
                                         max_captures = max_captures*8,
-                                        invalid_captures_path = '/home/mprinzler/projects/gintern/gtempeh/assets/nersemble/invalid_captures.txt',
+                                        invalid_captures_path = 'assets/nersemble/invalid_captures.txt',
                                         verts_pad_to_n = 5741
                                     ))
                                  ])

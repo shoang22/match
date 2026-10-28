@@ -9,7 +9,7 @@ script: scripts/tempeh/visualize_prediction_sequence.py
 visualize_prediction_sequence_config:
     dataset_cls: ava256
     dataset_kwargs: 
-        root_path: /fast/mprinzler/gintern/datasets/ava-256
+        root_path: data/ava-256
         height: 393
         width: 256
         camera_angles: [[0,0], [0, -15], [20,0], [20, 36], [20, -15], [-20,0], [-20, 36], [-20, -15], [40,-5], [40, 25], [-40,-5], [-40, 25]]

@@ -56,7 +56,7 @@ fi
 
 
 # # Instead use an existing image list file (e.g. from a failed previous job)
-# IMAGE_LIST_='/fast/mprinzler/gintern/datasets/ava-256/myimage_list_16374907_10.txt'
+# IMAGE_LIST_='data/ava-256/myimage_list_16374907_10.txt'
 # cp $IMAGE_LIST_ $IMAGE_LIST
 
 # Check if image list was created successfully

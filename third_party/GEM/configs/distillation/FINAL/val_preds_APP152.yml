@@ -6,7 +6,7 @@ script: test.py
 subject: APP152
 cross_subject: PGO261
 capture_id: 'UNION_FINAL_${subject}'
-actor_id: /is/cluster/mprinzler/gtempeh/experiments/gtempeh/distillation_datasets/finalava_uvres512_sapiens1b_mixed_780k_tracked_FLAME2020/${subject}/${capture_id}
+actor_id: example_data/distillation_datasets/finalava_uvres512_sapiens1b_mixed_780k_tracked_FLAME2020/${subject}/${capture_id}
 dataset_name: NERSEMBLE
 regressor: DECA
 ds_rate: 1
@@ -25,14 +25,14 @@ data:
   load_pretrained_face_features: True
   flame_fit_path: '/is/cluster/mprinzler/projects/gintern/GEM/experiments/flame_fits/${capture_id}/FINAL_flame_fits'
 
-data_cross_config: /home/mprinzler/projects/gintern/GEM/configs/distillation/FINAL/regressor_${cross_subject}.yml
+data_cross_config: configs/distillation/FINAL/regressor_${cross_subject}.yml
 
 ### TRAIN CONFIG
 
 train:
   tag: train_regressor_FINAL
   exp_name: FINAL_regressor_pcacomponents150
-  resume_path: /home/mprinzler/projects/gintern/GEM/experiments/train_regressor_FINAL/${capture_id}/FINAL_regressor_pcacomponents150/checkpoints/chkpnt040000.pth
+  resume_path: experiments/train_regressor_FINAL/${capture_id}/FINAL_regressor_pcacomponents150/checkpoints/chkpnt040000.pth
   pca_dir: /is/cluster/mprinzler/projects/gintern/GEM/experiments/gem/${capture_id}/FINAL_pca_pcacomponents150/pca
   disable_dynamic_mouth_opacities: True
   disable_dynamic_mouth_scales: True

@@ -11,7 +11,7 @@ ds_rate: 1
 width: 512
 height: 512
 
-data_cross_config: /home/mprinzler/projects/gintern/GEM/configs/regressor/V01/regressor_gtempeh_pca_all.yml
+data_cross_config: configs/regressor/V01/regressor_gtempeh_pca_all.yml
 
 data:
   image: ${actor_id}/images

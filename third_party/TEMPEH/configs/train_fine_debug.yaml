@@ -6,8 +6,8 @@ condor:
     executable: "condor/tempeh.sh"
     arguments: "python trainer/train_local.py \
                   --experiment-id ${..jobname} \
-                  --global-model-root-dir '/home/mprinzler/projects/gintern/TEMPEH/runs/coarse/coarse__tempeh_ava256_scale08_wedgeface10__September01__14-23-23' \
-                  --global-registration-root-dir '/home/mprinzler/projects/gintern/TEMPEH/results/ava256/test-coarse__tempeh_ava256_scale08_wedgeface10' \
+                  --global-model-root-dir 'runs/coarse/coarse__tempeh_ava256_scale08_wedgeface10__September01__14-23-23' \
+                  --global-registration-root-dir 'results/ava256/test-coarse__tempeh_ava256_scale08_wedgeface10' \
                   --num-iterations 150000 \
                   --print-frequency 1 \
                   --visualize-frequency 10 \

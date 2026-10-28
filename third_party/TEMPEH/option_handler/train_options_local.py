@@ -67,7 +67,7 @@ class TrainOptions(BaseTrainOptions):
 
         # data
         self.add_arg( cate='data', abbr='num-spnts', name='number-sample-points', type=list, default=[5741])
-        self.add_arg( cate='data', abbr='templ-name', name='template-fname', type=str, default='/home/mprinzler/projects/gintern/gtempeh/assets/ava256/face_topology_cleaned.obj')
+        self.add_arg( cate='data', abbr='templ-name', name='template-fname', type=str, default='assets/ava256/face_topology_cleaned.obj')
         self.add_arg( cate='data', abbr='vmask-name', name='vertex-mask-fname', type=str, default='./data/template/vertex_masks2_ava.npz')  # TODO fix actual weights
         self.add_arg( cate='data', abbr='input-img', name='input-image-type', type=str, default='stereo_images') 
         # self.add_arg( cate='data', abbr='input-img', name='input-image-type', type=str, default='color_images') 

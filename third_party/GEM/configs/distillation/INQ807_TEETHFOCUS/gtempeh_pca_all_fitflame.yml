@@ -4,8 +4,8 @@
 script: fit_flame_to_dataset.py
 
 capture_id: 'UNION_INQ807_TEETHFOCUS'
-actor_id: /is/cluster/mprinzler/gtempeh/experiments/gtempeh/distillation_datasets/easyava256_tempehuv_uvres512/360k_framestride1/INQ807_tracked/${capture_id}
-gtempeh_path: /is/cluster/mprinzler/gtempeh/experiments/gtempeh/distillation_datasets/easyava256_tempehuv_uvres512/360k_framestride1/INQ807
+actor_id: example_data/distillation_datasets/easyava256_tempehuv_uvres512/360k_framestride1/INQ807_tracked/${capture_id}
+gtempeh_path: example_data/distillation_datasets/easyava256_tempehuv_uvres512/360k_framestride1/INQ807
 dataset_name: NERSEMBLE
 ds_rate: 1
 

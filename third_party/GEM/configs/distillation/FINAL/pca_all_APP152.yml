@@ -5,8 +5,8 @@ script: pca_gauss.py
 
 subject: APP152
 capture_id: 'UNION_FINAL_${subject}'
-actor_id: /is/cluster/mprinzler/gtempeh/experiments/gtempeh/distillation_datasets/finalava_uvres512_sapiens1b_mixed_780k_tracked_FLAME2020/${subject}/${capture_id}
-gtempeh_path: /is/cluster/mprinzler/gtempeh/experiments/gtempeh/distillation_datasets/finalava_uvres512_sapiens1b_mixed_780k/${subject}
+actor_id: example_data/distillation_datasets/finalava_uvres512_sapiens1b_mixed_780k_tracked_FLAME2020/${subject}/${capture_id}
+gtempeh_path: example_data/distillation_datasets/finalava_uvres512_sapiens1b_mixed_780k/${subject}
 dataset_name: NERSEMBLE
 ds_rate: 1
 

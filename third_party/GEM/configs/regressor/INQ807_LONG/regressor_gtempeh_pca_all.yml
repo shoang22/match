@@ -21,7 +21,7 @@ data:
   camera_list: ["00", "03", "05", "06", "08"]
   use_sampler: false
 
-data_cross_config: /home/mprinzler/projects/gintern/GEM/configs/regressor/V01/regressor_gtempeh_pca_all.yml
+data_cross_config: configs/regressor/V01/regressor_gtempeh_pca_all.yml
 
 ### TRAIN CONFIG
 

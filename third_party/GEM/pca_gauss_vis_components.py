@@ -345,7 +345,7 @@ def ava2flame_verts(ava_verts, ava2flame_mapping):
     return flame_verts
 
 # loading template mesh
-template_path = '/home/mprinzler/projects/gintern/gtempeh/assets/ava256/face_topology_cleaned.obj'
+template_path = 'assets/ava256/face_topology_cleaned.obj'
 mesh_info = load_obj(str(template_path))
 template_verts = torch.from_numpy(mesh_info['v']).cuda()
 template_triangles = torch.from_numpy(mesh_info['vi']).cuda()
@@ -471,11 +471,11 @@ def run(config, quantize=False, debug_frames=None):
     flame_params = defaultdict(list)
     ref_quaternion = None
 
-    ava2flame_mapping = dict(np.load('/home/mprinzler/projects/gintern/GEM/assets/meshes/mapping_ava2flame.npz'))
+    ava2flame_mapping = dict(np.load('assets/flame/mapping_ava2flame.npz'))
     for k, v in ava2flame_mapping.items():
         ava2flame_mapping[k] = torch.from_numpy(v).cuda()
 
-    flame2gaussian_mapping = dict(np.load('/home/mprinzler/projects/gintern/GEM/assets/meshes/mapping_flame2gaussians.npz'))
+    flame2gaussian_mapping = dict(np.load('assets/flame/mapping_flame2gaussians.npz'))
     for k, v in flame2gaussian_mapping.items():
         flame2gaussian_mapping[k] = torch.from_numpy(v).cuda()
 

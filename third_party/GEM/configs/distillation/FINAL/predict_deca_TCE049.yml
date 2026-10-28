@@ -5,7 +5,7 @@ script: predict_deca.py
 
 subject: TCE049
 capture_id: 'UNION_FINAL_${subject}'
-actor_id: /is/cluster/mprinzler/gtempeh/experiments/gtempeh/distillation_datasets/finalava_uvres512_sapiens1b_mixed_780k_tracked_FLAME2020/${subject}/${capture_id}
+actor_id: example_data/distillation_datasets/finalava_uvres512_sapiens1b_mixed_780k_tracked_FLAME2020/${subject}/${capture_id}
 dataset_name: NERSEMBLE
 regressor: DECA
 ds_rate: 1
@@ -23,7 +23,7 @@ data:
   use_sampler: false
   load_pretrained_face_features: False
 
-data_cross_config: /home/mprinzler/projects/gintern/GEM/configs/regressor/V01/regressor_gtempeh_pca_all.yml
+data_cross_config: configs/regressor/V01/regressor_gtempeh_pca_all.yml
 
 ### TRAIN CONFIG
 

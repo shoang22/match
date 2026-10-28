@@ -1,7 +1,7 @@
 # condor/submit.py configs/match/train_match_debug.gin 35
 # condor/run.py configs/match/train_match_debug.gin
 NAME = "match_debug"
-BASE_FOLDER = "/home/mprinzler/projects/gintern/match/experiments/clean"
+BASE_FOLDER = "experiments/clean"
 
 AVA_HEIGHT = 786
 AVA_WIDTH = 512
@@ -12,12 +12,12 @@ HEAD_CROP_OFFSET_Y = -64
 INPUT_RES = %AVA_HEAD_CROP_HEIGHT
 OUTPUT_RES = %INPUT_RES
 IMG_PATCH_SIZE = 8
-AVA_ROOT = '/fast/mprinzler/gintern/datasets/ava-256'
+AVA_ROOT = 'data/ava-256'
 AVA_FRAME_STRIDE = 10
 AVA_UV_DIR = '/fast/mprinzler/gintern/datasets/mixed_uvpredictions/finalava256_tempeh_officialfeaturenet_1M/ava_framestride10'
 AVA_COARSE_MESH_DIR = '/fast/mprinzler/gintern/datasets/mixed_uvpredictions/finalava256_tempeh_officialfeaturenet_1M/ava_framestride10'
 AVA_USE_GT_UV = False
-AVA_SAPIENS_SEG_DIR = '/fast/mprinzler/gintern/datasets/ava-256_sapiens_segmentations/framestride_10/sapiens_1b'
+AVA_SAPIENS_SEG_DIR = 'data/sapiens_segmentations/ava-256/framestride_10/sapiens_1b'
 AVA_CAMERA_ANGLES = [[0,0], [0, -15],
                   [20,0], [20, 36], [20, -15],
                   [-20,0], [-20, 36], [-20, -15],
@@ -64,7 +64,7 @@ Options:
     uv_patch_size=16
     input_res = %INPUT_RES
     output_res = %OUTPUT_RES
-    template_mesh_vertex_groups_path = '/home/mprinzler/projects/gintern/gtempeh/assets/ava256/vertex_groups_with_neck_and_scalp.json'
+    template_mesh_vertex_groups_path = 'assets/ava256/vertex_groups_with_neck_and_scalp.json'
 
     # DATASET
     train_loader_params = {
@@ -150,7 +150,7 @@ Options:
         }
         }
     ]
-    segmentation_labels_path = '/home/mprinzler/projects/gintern/gtempeh/assets/sapiens/segmentation_labels.json'
+    segmentation_labels_path = 'assets/sapiens/segmentation_labels.json'
 
     # Training
     optimizer = {        

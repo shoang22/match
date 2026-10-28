@@ -12,11 +12,11 @@ HEAD_CROP_OFFSET_Y = -64
 INPUT_RES = %HEAD_CROP_HEIGHT
 OUTPUT_RES = %INPUT_RES
 IMG_PATCH_SIZE = 8
-AVA_ROOT = '/fast/mprinzler/gintern/datasets/ava-256'
+AVA_ROOT = 'data/ava-256'
 AVA_FRAME_STRIDE = 10
 AVA_UV_DIR = '/fast/mprinzler/gintern/datasets/mixed_uvpredictions/MATCH_TEMPEH/ava-256'
 AVA_COARSE_MESH_DIR = %AVA_UV_DIR
-AVA_SAPIENS_SEG_DIR = '/fast/mprinzler/gintern/datasets/ava-256_sapiens_segmentations/framestride_10/sapiens_1b'
+AVA_SAPIENS_SEG_DIR = 'data/sapiens_segmentations/ava-256/framestride_10/sapiens_1b'
 AVA_CAMERA_ANGLES = [[0,0], [0, -15],
                   [20,0], [20, 36], [20, -15],
                   [-20,0], [-20, 36], [-20, -15],

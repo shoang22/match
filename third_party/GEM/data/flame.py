@@ -622,7 +622,7 @@ class FLAME(nn.Module):
 
         # Static and Dynamic Landmark embeddings for FLAME
 
-        lmk_embeddings = np.load(f"/fast/mprinzler/gintern/GEM/data/FLAME2020/landmark_embedding.npy", allow_pickle=True, encoding='latin1')
+        lmk_embeddings = np.load(f"assets/flame/landmark_embedding.npy", allow_pickle=True, encoding='latin1')
         lmk_embeddings = lmk_embeddings[()]
         self.register_buffer('lmk_faces_idx', torch.from_numpy(lmk_embeddings['static_lmk_faces_idx']).long())
         self.register_buffer('lmk_bary_coords', torch.from_numpy(lmk_embeddings['static_lmk_bary_coords']).to(self.dtype))

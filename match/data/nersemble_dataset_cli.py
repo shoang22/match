@@ -59,7 +59,7 @@ if __name__ == '__main__':
     # )
 
     # dataset_ava256 = AvaMultiCaptureDataset(
-    #     root_path='/fast/mprinzler/gintern/datasets/ava-256',
+    #     root_path='data/ava-256',
     #     height=786,
     #     width=512,
     #     max_captures=10,
@@ -73,7 +73,7 @@ if __name__ == '__main__':
     #     deterministic_shuffle=True,
     #     process_idx = 0,
     #     world_size=1,
-    #     # sapiens_segmentation_directory='/fast/mprinzler/gintern/datasets/ava-256_sapiens_segmentations/framestride_10/sapiens_1b',
+    #     # sapiens_segmentation_directory='data/sapiens_segmentations/ava-256/framestride_10/sapiens_1b',
     #     # coarse_mesh_directory='/fast/mprinzler/gintern/datasets/ava-256_uvpredictions/TEMPEH_ORIGINAL/coarse__tempeh_ava256_scale08_wedgeface10__September01__14-23-23_uvmaps_full',
     #     # uv_directory='/fast/mprinzler/gintern/datasets/ava-256_uvpredictions/TEMPEH_ORIGINAL/coarse__tempeh_ava256_scale08_wedgeface10__September01__14-23-23_uvmaps_full',
     #     frame_stride = 1,

@@ -155,7 +155,7 @@ class Trainer(BaseTrainer):
         #                                         image_file_ext=image_file_ext)
         from datasets.ava256_dataset import AvaMultiCaptureDataset
         print(f'Registering Data, Process: {process_idx}/{world_size}')
-        ava_root = '/fast/mprinzler/gintern/datasets/ava-256'
+        ava_root = 'data/ava-256'
         cam_angles = [[0,0], [0, 36], [0, -15],
                   [20,0], [20, 36], [20, -15],
                   [-20,0], [-20, 36], [-20, -15],

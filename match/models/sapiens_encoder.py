@@ -245,14 +245,14 @@ def gamma_correction_cv(img: np.ndarray, gamma: float) -> np.ndarray:
 
 if __name__ == '__main__':
     import time
-    ckpt = '/fast/mprinzler/sapiens/sapiens_lite_host/torchscript/pretrain/checkpoints/sapiens_1b/sapiens_1b_epoch_173_torchscript.pt2'
+    ckpt = 'assets/sapiens/checkpoints/torchscript/pretrain/checkpoints/sapiens_1b/sapiens_1b_epoch_173_torchscript.pt2'
     device = torch.device('cuda')
     dtype=torch.bfloat16
     from match.data.ava256_dataset import AvaMultiCaptureDataset
     import matplotlib.pyplot as plt
     patch_size = 8
     encoder = SapiensEncoder(ckpt=ckpt, device=device, dtype=dtype, patch_size=patch_size, prediction_tiles_sqrt=2)
-    root = '/fast/mprinzler/gintern/datasets/ava-256'
+    root = 'data/ava-256'
     cam_angles = [[0,0], [0, -15],
                   [20,0], [20, 36], [20, -15],
                   [-20,0], [-20, 36], [-20, -15],
@@ -265,7 +265,7 @@ if __name__ == '__main__':
                                 # frames_per_subject=1, 
                                 # deterministic_shuffle=True,
                                 stage1_directory='/fast/mprinzler/gintern/datasets/ava-256_uvpredictions/gtempeh/easyava256_tempehuv_uvres512-240k',
-                                sapiens_segmentation_directory='/fast/mprinzler/gintern/datasets/ava-256_sapiens_segmentations/framestride_10/sapiens_1b',
+                                sapiens_segmentation_directory='data/sapiens_segmentations/ava-256/framestride_10/sapiens_1b',
                                 # sapiens_feature_directory='/fast/mprinzler/gintern/datasets/ava-256_sapiens_features/framestride_100_fixedresizing/sapiens_2b',
                                 # sapiens_feature_patchsize = 8,
                                 uv_directory='/fast/mprinzler/gintern/datasets/ava-256_uvpredictions/gtempeh/easyava256_tempehuv_uvres512-240k',

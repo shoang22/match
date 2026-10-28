@@ -5,7 +5,7 @@ condor:
   submit:
     executable: "condor/tempeh.sh"
     arguments: "python tester/test_global.py \
-                  --coarse_model_run_dir /home/mprinzler/projects/gintern/TEMPEH/runs/coarse/coarse__tempeh_ava256_scale08_wedgeface10__September01__14-23-23 \
+                  --coarse_model_run_dir runs/coarse/coarse__tempeh_ava256_scale08_wedgeface10__September01__14-23-23 \
                   --data_list_fname ./data/training_data/seventy_subj__all_seq_frames_per_seq_40_head_rot_120_train.json \
                   --image_directory  ./data/training_data/train_images_4 \
                   --calibration_directory ./data/training_data/train_calibrations \

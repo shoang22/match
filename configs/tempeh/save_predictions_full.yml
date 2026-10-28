@@ -7,7 +7,7 @@ out_dir: /fast/mprinzler/gintern/datasets/mixed_uvpredictions/MATCH_TEMPEH_close
 script: scripts/tempeh/save_predictions.py
 tempeh_config: /is/cluster/mprinzler/projects/gintern/match/experiments/tempeh/closedgap/coarse__tempeh_closedgap__March05__15-12-04_1M/config.json
 arguments: "--config-filename ${tempeh_config} \
-            --dataset-directory /fast/mprinzler/gintern/datasets/ava-256 \
+            --dataset-directory data/ava-256 \
             --camera-angles '[[0,0], [0, -15], [20,0], [20, 36], [20, -15], [-20,0], [-20, 36], [-20, -15], [40,-5], [40, 25], [-40,-5], [-40, 25]]' \
             --height 256 \
             --width 167 \
