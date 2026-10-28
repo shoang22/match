@@ -169,7 +169,7 @@ def tempeh_unnormalize_image(image, mean=np.array([0.485, 0.456, 0.406], dtype=n
       return image *  std.reshape((1,1,3)) + mean.reshape((1,1,3))
 
 
-ava_template_mesh_info = mesh_util.load_obj(str("/home/mprinzler/projects/gintern/gtempeh/assets/ava256/face_topology_cleaned.obj"))
+ava_template_mesh_info = mesh_util.load_obj(str("./assets/ava256/face_topology_cleaned.obj"))
 
 
 GTEMPEH_IMAGE_KEYS = [

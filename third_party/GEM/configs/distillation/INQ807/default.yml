@@ -5,7 +5,7 @@ script: pca_gauss.py
 
 
 capture_id: 'UNION_INQ807'
-actor_id: /is/cluster/mprinzler/gtempeh/experiments/gtempeh/distillation_datasets/easyava256_tempehuv_uvres512/360k_framestride1/INQ807_tracked/${capture_id}
+actor_id: example_data/distillation_datasets/easyava256_tempehuv_uvres512/360k_framestride1/INQ807_tracked/${capture_id}
 dataset_name: NERSEMBLE
 ds_rate: 1
 width: 512

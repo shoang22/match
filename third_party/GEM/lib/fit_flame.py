@@ -513,7 +513,7 @@ if __name__ == "__main__":
     # target_points = (target_points - target_points.mean(0)) @ torch.diag(torch.tensor([-1.,1.,1.], device=target_points.device)) + target_points.mean(0)
 
 
-    ava_template = load_obj('/home/mprinzler/projects/gintern/gtempeh/assets/ava256/face_topology_cleaned.obj')
+    ava_template = load_obj('assets/ava256/face_topology_cleaned.obj')
     ava_verts = ava_template['v']
     ava_verts = torch.from_numpy(ava_verts).float()
     target_points = ava_verts

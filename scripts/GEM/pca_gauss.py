@@ -329,7 +329,7 @@ def ava2flame_verts(ava_verts, ava2flame_mapping):
     return flame_verts
 
 # loading template mesh
-template_path = '/home/mprinzler/projects/gintern/match/assets/ava256/face_topology_cleaned.obj'
+template_path = 'assets/ava256/face_topology_cleaned.obj'
 mesh_info = load_obj(str(template_path))
 template_verts = torch.from_numpy(mesh_info['v']).cuda()
 template_triangles = torch.from_numpy(mesh_info['vi']).cuda()

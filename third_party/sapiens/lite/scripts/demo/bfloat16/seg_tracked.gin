@@ -6,7 +6,7 @@ CondorParameters:
   njobs = 10
   name = 'sapiens_segmentation'
   batch_name = 'sapiens_segmentation'
-  base_dir = '/home/mprinzler/projects/gintern/gtempeh/experiments/file_operations'
+  base_dir = 'experiments/file_operations'
   cmd = 'source /home/mprinzler/miniconda3/etc/profile.d/conda.sh; conda activate sapiens_lite; ./seg_tracked.sh'
   request_gpus = 1
   backup_root = None

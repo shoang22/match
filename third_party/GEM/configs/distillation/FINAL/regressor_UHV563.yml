@@ -6,7 +6,7 @@ script: train.py
 subject: UHV563
 cross_subject: INQ807
 capture_id: 'UNION_FINAL_${subject}'
-actor_id: /is/cluster/mprinzler/gtempeh/experiments/gtempeh/distillation_datasets/finalava_uvres512_sapiens1b_mixed_780k_tracked_FLAME2020/${subject}/${capture_id}
+actor_id: example_data/distillation_datasets/finalava_uvres512_sapiens1b_mixed_780k_tracked_FLAME2020/${subject}/${capture_id}
 dataset_name: NERSEMBLE
 regressor: DECA
 ds_rate: 1
@@ -26,7 +26,7 @@ data:
   flame_fit_path: '/is/cluster/mprinzler/projects/gintern/GEM/experiments/flame_fits/${capture_id}/FINAL_flame_fits'
 
 
-data_cross_config: /home/mprinzler/projects/gintern/GEM/configs/distillation/FINAL/regressor_${cross_subject}.yml
+data_cross_config: configs/distillation/FINAL/regressor_${cross_subject}.yml
 
 ### TRAIN CONFIG
 

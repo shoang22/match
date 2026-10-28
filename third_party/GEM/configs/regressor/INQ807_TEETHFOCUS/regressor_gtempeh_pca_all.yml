@@ -4,7 +4,7 @@
 script: train.py
 
 capture_id: 'UNION_INQ807_TEETHFOCUS'
-actor_id: /is/cluster/mprinzler/gtempeh/experiments/gtempeh/distillation_datasets/easyava256_tempehuv_uvres512/360k_framestride1/INQ807_tracked/${capture_id}
+actor_id: example_data/distillation_datasets/easyava256_tempehuv_uvres512/360k_framestride1/INQ807_tracked/${capture_id}
 dataset_name: NERSEMBLE
 regressor: DECA
 ds_rate: 1
@@ -24,7 +24,7 @@ data:
   flame_fit_path: '/is/cluster/mprinzler/projects/gintern/GEM/experiments/flame_fits/UNION_INQ807_TEETHFOCUS/flame_fit_unpose_all'
 
 
-data_cross_config: /home/mprinzler/projects/gintern/GEM/configs/regressor/V01/regressor_gtempeh_pca_all.yml
+data_cross_config: configs/regressor/V01/regressor_gtempeh_pca_all.yml
 
 ### TRAIN CONFIG
 

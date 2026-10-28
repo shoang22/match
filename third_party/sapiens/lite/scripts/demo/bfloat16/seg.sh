@@ -1,7 +1,7 @@
 #!/bin/bash
 
 cd ../../.. || exit
-SAPIENS_CHECKPOINT_ROOT=/fast/mprinzler/sapiens/sapiens_lite_host
+SAPIENS_CHECKPOINT_ROOT=assets/sapiens/checkpoints
 
 # MODE='torchscript' ## original. no optimizations (slow). full precision inference.
 MODE='bfloat16' ## A100 gpus. faster inference at bfloat16

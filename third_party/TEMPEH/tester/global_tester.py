@@ -86,7 +86,7 @@ class Tester(BaseTester):
         #                                     image_file_ext=image_file_ext)
         
         from datasets.ava256_dataset import AvaMultiCaptureDataset
-        ava_root = '/fast/mprinzler/gintern/datasets/ava-256'
+        ava_root = 'data/ava-256'
         cam_angles = [[0,0], [0, 36], [0, -15],
                   [20,0], [20, 36], [20, -15],
                   [-20,0], [-20, 36], [-20, -15],

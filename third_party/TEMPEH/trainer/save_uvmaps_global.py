@@ -12,7 +12,7 @@ for Intelligent Systems. All rights reserved.
 For comments or questions, please email us at tempeh@tue.mpg.de
 
 python trainer/save_uvmaps_local.py \
-    --config-filename /home/mprinzler/projects/gintern/TEMPEH/runs/refinement/refinement__tempeh_fine_ava256_scale08_wedgeface10__September11__01-52-50/config.json \
+    --config-filename runs/refinement/refinement__tempeh_fine_ava256_scale08_wedgeface10__September11__01-52-50/config.json \
     --outpath /fast/mprinzler/gintern/datasets/ava-256_uvpredictions/TEMPEH_ORIGINAL/refinement__tempeh_fine_ava256_scale08_wedgeface10__September11__01-52-50_debug \
     --uv-out-height 786 \
     --uv-out-width 512

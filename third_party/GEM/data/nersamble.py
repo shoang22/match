@@ -42,7 +42,7 @@ def get_orig_image_path(image_path):
     cam_idx = int(image_path.name.split('_')[1].split('.')[0])
     subject = image_path.parents[2].name
     sequence = image_path.parents[1].name
-    orig_dir = Path('/is/cluster/mprinzler/gtempeh/experiments/gtempeh/distillation_datasets/finalava_uvres512_sapiens1b_mixed_780k')
+    orig_dir = Path('example_data/distillation_datasets/finalava_uvres512_sapiens1b_mixed_780k')
     orig_seq_dir = orig_dir / subject / sequence
     orig_frame_dirs = [p for p in sorted(orig_seq_dir.iterdir()) if p.name.isnumeric()]
     orig_frame_dir = orig_frame_dirs[frame_idx]
