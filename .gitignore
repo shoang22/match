@@ -17,3 +17,5 @@ zips
 notebooks/
 .claude/
 skills-lock.json
+.lavish/
+.agents/
