@@ -15,3 +15,5 @@ scratch.py
 .vscode/
 zips
 notebooks/
+.claude/
+skills-lock.json
