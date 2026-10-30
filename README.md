@@ -107,6 +107,25 @@ We demonstrate how a set of registered Gaussian splat textures of a person predi
 
 ## Training MATCH
 Coming soon...
+
+### Single-GPU smoke test
+`configs/match/train_match_smoketest.gin` runs 50 training steps (with evals at steps 25 and 50) on the quickstart data to check that the training loop works. It is not a real training run. It was tested on a single RTX 4090 (24GB) under WSL2, peaking at ~17GB of GPU memory.
+
+- Run the quickstart steps 3 and 4 first. The smoke test only needs the single frame with TEMPEH predictions under `data/tempeh_predictions/ava-256/quickstart`; Sapiens segmentations and kinematic tracking are not required.
+- Run the smoke test:
+    ```bash
+    PYOPENGL_PLATFORM=egl PYTHONPATH=$(pwd) PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+      torchrun --standalone --nnodes=1 --nproc-per-node=1 scripts/match/train_match.py \
+      --gin_configs configs/match/train_match_smoketest.gin
+    ```
+    Results are written to `experiments/clean/match_smoketest`.
+
+To fit in 24GB, the config uses 4 input views and a 32x32 grid of UV patches (`uv_patch_size = 16` at `uv_res = 512`). The image-UV patch correspondence step scales with input views x UV patches x pixels, and the full 12-view setup does not fit.
+
+#### Troubleshooting (WSL2)
+- `EGL_NOT_INITIALIZED` / `failed to open /dev/dri/renderD128: Permission denied`: the render device is owned by a group your user is not in. Check with `ls -ln /dev/dri`, then either run `sudo chmod 666 /dev/dri/renderD128` (resets when WSL restarts) or add yourself to the owning group permanently, e.g. for gid 992: `sudo groupadd -g 992 render992 && sudo usermod -aG render992 $USER`, followed by `wsl --shutdown`.
+- `pyglet.gl.ContextException: Could not create GL context` during evaluation: `PYOPENGL_PLATFORM=egl` is not set.
+- `XStartError: Xvfb program closed ... server already running`: an Xvfb from a crashed run still holds display `:99`. Kill it with `pkill -f "[X]vfb -br.*:99"`.
 <!-- - Make sure you downloaded the entire ava-256 dataset as described [here](#training-tempeh).
 - Download the NeRSemble dataset following the instructions from the [official repository](https://github.com/tobias-kirschstein/nersemble-data). For all further steps, we assume that the nersemble dataset root is `data/nersemble/`
 -  -->

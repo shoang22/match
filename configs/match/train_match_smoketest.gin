@@ -1,0 +1,141 @@
+# Single-GPU smoke test on the quickstart data (one TCE049 frame). Checks that the training loop runs; not a real training.
+# PYOPENGL_PLATFORM=egl PYTHONPATH=$(pwd) PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True torchrun --standalone --nnodes=1 --nproc-per-node=1 scripts/match/train_match.py --gin_configs configs/match/train_match_smoketest.gin
+NAME = "match_smoketest"
+BASE_FOLDER = "experiments/clean"
+
+AVA_HEIGHT = 786
+AVA_WIDTH = 512
+AVA_HEAD_CROP = True
+AVA_HEAD_CROP_HEIGHT = 640
+AVA_HEAD_CROP_WIDTH = 512
+HEAD_CROP_OFFSET_Y = -64
+INPUT_RES = %AVA_HEAD_CROP_HEIGHT
+OUTPUT_RES = %INPUT_RES
+AVA_ROOT = 'data/ava-256'
+AVA_FRAME_STRIDE = 10
+AVA_UV_DIR = 'data/tempeh_predictions/ava-256/quickstart/ava-256'
+AVA_COARSE_MESH_DIR = %AVA_UV_DIR
+AVA_CAMERA_ANGLES = [[0,0], [0, -15],
+                  [20,0], [20, 36], [20, -15],
+                  [-20,0], [-20, 36], [-20, -15],
+                  [40,-5], [40, 25],
+                  [-40,-5], [-40, 25],
+                  ]
+BATCH_SIZE = 1
+
+# calculating derrived values
+base_folder/join_strings.strings = [%BASE_FOLDER, '/', %NAME]
+
+Options:
+    # Experiment
+    base_folder = @base_folder/join_strings()
+    n_vissamples = 1
+    max_val_steps = 1
+    geom_only_steps = 10
+    lpips_warmup_start = 20
+    lpips_warmup_end = 30
+    max_train_steps = 50
+    eval_freq = 25
+    early_eval_freq = 25
+    log_freq = 1
+    save_freq = 50
+    restart_after_eval_frequency = 1000
+
+    # Model
+    use_sapiens_features = True
+    sapiens_prediction_tiles_sqrt = 2
+    skip_connection = True
+    num_blocks = 6
+    n_neighbors = 100
+    uv_res = 512
+    uv_patch_size = 16  # 32x32 uv patches; the correspondence step scales with views x uv patches x pixels
+    input_res = %INPUT_RES
+    output_res = %OUTPUT_RES
+    template_mesh_vertex_groups_path = 'assets/ava256/vertex_groups_with_neck_and_scalp.json'
+
+    # DATASET
+    # TCE049 is a validation subject, so training=None disables the train/val split.
+    # nsamples=1 pins the dataset to frame 0 (32885), the only frame with TEMPEH predictions.
+    # No sapiens segmentations or kinematic tracking were downloaded, so both are optional here.
+    train_loader_params = {
+        'cls': 'ava256',
+        'kwargs': {
+        'dataloader_kwargs': {
+            'batch_size': %BATCH_SIZE,
+            'num_workers': 2,
+        },
+        'dataset_kwargs': {
+            "root_path": %AVA_ROOT,
+            'height': %AVA_HEIGHT,
+            'width': %AVA_WIDTH,
+            "camera_angles":  %AVA_CAMERA_ANGLES,
+            'uv_directory': %AVA_UV_DIR,
+            'coarse_mesh_directory': %AVA_COARSE_MESH_DIR,
+            'frame_stride': %AVA_FRAME_STRIDE,
+            'head_crop': %AVA_HEAD_CROP,
+            'head_crop_height': %AVA_HEAD_CROP_HEIGHT,
+            'head_crop_width': %AVA_HEAD_CROP_WIDTH,
+            'head_crop_offset_y': %HEAD_CROP_OFFSET_Y,
+            'training': None,
+            'nsamples': 1,
+            'require_segmentation': False,
+            'require_verts': False,
+        }
+        }
+    }
+    val_loader_params = [
+        {
+        'name': 'ava_val',
+        'cls': 'ava256',
+        'kwargs': {
+            'dataloader_kwargs': {
+            "batch_size": %BATCH_SIZE,
+            'num_workers': 1,
+            },
+            'dataset_kwargs': {
+            "root_path": %AVA_ROOT,
+            'height': %AVA_HEIGHT,
+            'width': %AVA_WIDTH,
+            "camera_angles":  %AVA_CAMERA_ANGLES,
+            'uv_directory': %AVA_UV_DIR,
+            'coarse_mesh_directory': %AVA_COARSE_MESH_DIR,
+            'frame_stride': %AVA_FRAME_STRIDE,
+            'head_crop': %AVA_HEAD_CROP,
+            'head_crop_height': %AVA_HEAD_CROP_HEIGHT,
+            'head_crop_width': %AVA_HEAD_CROP_WIDTH,
+            'head_crop_offset_y': %HEAD_CROP_OFFSET_Y,
+            'training': None,
+            'nsamples': 1,
+            'require_segmentation': False,
+            'require_verts': False,
+            }
+        }
+        },
+    ]
+    segmentation_labels_path = 'assets/sapiens/segmentation_labels.json'
+
+    # Training
+    optimizer = {
+            "name": "adamw",
+            "lr": 4e-5,
+            "betas": [0.9, 0.95],
+            "weight_decay": 0.05,
+    }
+    grad_checkpoint = True
+    find_unused_parameters = True
+    num_input_views = 4  # 12 doesn't fit in 24 GB
+    num_views = 8
+    num_render_views = 8
+    input_bg = 'white'
+    output_bg = 'random'
+
+    # Losses
+    lpips_weight = 1.0
+    render_weight = 0.0
+    l1_weight = 0.8
+    ssim_weight = 0.2
+    mesh_vert_weight = 0.0  # no kinematic tracking downloaded -> GT verts are zeros
+    xyz_weight = 1e-3
+    scale_weight = 1e-3
+    scale_target = 0.0005
+    noloss_masks = []  # no sapiens segmentations

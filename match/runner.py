@@ -69,7 +69,7 @@ class MatchRunner:
         self.vertex_mask = self.model.vertex_mask
 
         # starting virtual display for headless cpu-based rendering
-        self.display = Display()
+        self.display = Display(extra_args=[':99', '-nolisten', 'unix'])  # WSLg mounts /tmp/.X11-unix read-only
         self.display.start()  # opening virtual display for headless cpu-based rendering
 
         tf.config.set_visible_devices([], 'GPU')  # disabling GPU usage for tensorflow
