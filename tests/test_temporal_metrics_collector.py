@@ -73,3 +73,42 @@ def test_temporal_section_has_both_scores_for_both_sources_per_consecutive_pair(
         for source in SOURCES:
             assert sorted(entry[source]) == sorted(SCORES)
             assert all(isinstance(v, float) and math.isfinite(v) for v in entry[source].values()), entry
+
+
+def test_flow_from_the_real_footage_aligns_the_prediction_too():
+    # The real footage moves 3 px/frame; the prediction stands still. Warping the prediction with the real
+    # motion leaves a large error, which flow estimated on the (static) prediction itself would not.
+    temporal = collect(contexts(static(1), translating(0)))['temporal']
+
+    for frame in FRAMES[1:]:
+        pred, real = temporal['per_pair'][frame]['prediction'], temporal['per_pair'][frame]['real']
+        assert pred['raw_flicker'] == 0.0
+        assert real['raw_flicker'] > 0.02
+        assert real['flow_aligned_error'] < 0.05 * real['raw_flicker']
+        assert pred['flow_aligned_error'] > 0.02
+        assert pred['flow_aligned_error'] > 10 * real['flow_aligned_error']
+
+
+def test_pixels_outside_the_mask_do_not_change_the_prediction_scores():
+    pred, real = translating(1), translating(0)
+    outside = square_mask() == 0
+    noisy_pred = pred.clone()
+    noise = torch.rand(pred.shape, generator=torch.Generator().manual_seed(7))
+    noisy_pred[:, outside.expand(3, H, W)] = noise[:, outside.expand(3, H, W)]
+
+    clean = collect(contexts(pred, real))['temporal']['per_pair']
+    noisy = collect(contexts(noisy_pred, real))['temporal']['per_pair']
+    assert noisy == clean
+
+
+def test_pixels_outside_the_mask_do_not_change_the_real_raw_flicker():
+    # (The real footage's flow-aligned error can shift slightly: RAFT sees the whole image.)
+    pred, real = translating(1), translating(0)
+    outside = (square_mask() == 0).expand(3, H, W)
+    noisy_real = real.clone()
+    noise = torch.rand(real.shape, generator=torch.Generator().manual_seed(7))
+    noisy_real[:, outside] = noise[:, outside]
+
+    clean = collect(contexts(pred, real))['temporal']['per_pair']
+    noisy = collect(contexts(pred, noisy_real))['temporal']['per_pair']
+    assert [noisy[f]['real']['raw_flicker'] for f in FRAMES[1:]] == [clean[f]['real']['raw_flicker'] for f in FRAMES[1:]]
