@@ -1,0 +1,93 @@
+"""Camera-sweep helpers: sweep extrinsics, sweep intrinsics, and frames-to-video.
+
+Shared by scripts/match/save_camera_sweeps.py and the sequence evaluation run.
+"""
+import math
+
+import numpy as np
+
+
+def ellipse(xmin, xmax, ymin, ymax, sigma):
+    """
+    Returns a point (x, y) on the edge of an ellipse specified by
+    x_range = (xmin, xmax)
+    y_range = (ymin, ymax)
+    sigma in [0, 1], where 0 and 1 correspond to the same position.
+    """
+
+    # Ellipse center
+    xc = (xmin + xmax) / 2.0
+    yc = (ymin + ymax) / 2.0
+
+    # Radii
+    a = (xmax - xmin) / 2.0
+    b = (ymax - ymin) / 2.0
+
+    # Angle from sigma
+    theta = 2 * np.pi * sigma
+
+    # Edge point
+    x = xc + a * np.cos(theta)
+    y = yc + b * np.sin(theta)
+
+    return x, y
+
+
+def generate_camera_sweep_extrinsics(
+    vert_range_deg=(-10, 10),   # (min, max) vertical tilt (x-axis rotation)
+    horiz_range_deg=(-30, 30), # (min, max) horizontal pan (y-axis rotation)
+    expand_periods = 0.5,
+    reduce_periods = 0.5,
+    full_periods = 1,
+    num_steps=20,
+    radius = 1.,
+    center = [0., 0., 0.],
+    up = [0., -1., 0.],
+
+):
+    """
+    Produce a set of extrinsics for a camera sweep around the reference view.
+    Returns camera-to-world matrices as a numpy array of shape (N, 4, 4).
+    """
+    all_periods = expand_periods + full_periods + reduce_periods
+    steps_per_period = num_steps / all_periods
+    expand_steps = round(steps_per_period*expand_periods)
+    full_steps = round(steps_per_period*full_periods)
+    reduce_steps = num_steps - expand_steps - full_steps
+    center = np.array(center)
+    up = np.array(up)
+
+    radius_ratios = np.concatenate([
+        np.sin(np.linspace(0, np.pi/2, expand_steps)),
+        np.ones((full_steps)),
+        np.cos(np.linspace(0, np.pi/2, reduce_steps))])
+
+    t = np.linspace(0, all_periods, num_steps)
+    angles_h, angles_v = ellipse(xmin=math.radians(horiz_range_deg[0])*radius_ratios,
+                                 xmax=math.radians(horiz_range_deg[1])*radius_ratios,
+                                 ymin=math.radians(vert_range_deg[0])*radius_ratios,
+                                 ymax=math.radians(vert_range_deg[1])*radius_ratios,
+                                 sigma=t,
+                                 )
+
+    # camera locations
+    y_cam = -radius * np.sin(angles_v)
+    rc = -radius * np.cos(angles_v)
+    x_cam = rc * np.sin(angles_h)
+    z_cam = rc * np.cos(angles_h)
+    cam_pos = np.stack([x_cam, y_cam, z_cam], axis=-1)  # (N, 3)
+
+    # camera rotations:
+    ax_z_cam = center[None] - cam_pos
+    ax_x_cam = np.cross(ax_z_cam, up[None])
+    ax_y_cam = np.cross(ax_z_cam, ax_x_cam)
+    ax_x_cam /= np.linalg.norm(ax_x_cam, axis=-1, keepdims=True)
+    ax_y_cam /= np.linalg.norm(ax_y_cam, axis=-1, keepdims=True)
+    ax_z_cam /= np.linalg.norm(ax_z_cam, axis=-1, keepdims=True)
+
+    C2W = np.repeat(np.eye(4)[None], num_steps, axis=0)
+    C2W[:, :3, 0] = ax_x_cam
+    C2W[:, :3, 1] = ax_y_cam
+    C2W[:, :3, 2] = ax_z_cam
+    C2W[:, :3, 3] = cam_pos
+    return C2W
