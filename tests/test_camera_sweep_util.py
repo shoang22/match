@@ -53,16 +53,21 @@ def test_sweep_intrinsics_scale_the_first_input_view_focal_and_center_the_princi
 def _probe_video(path):
     out = subprocess.run(
         ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-count_frames',
-         '-show_entries', 'stream=width,height,r_frame_rate,nb_read_frames', '-of', 'json', str(path)],
+         '-show_entries', 'stream=width,height,r_frame_rate,nb_read_frames,pix_fmt', '-of', 'json',
+          str(path)],
         check=True, capture_output=True, text=True).stdout
     return json.loads(out)['streams'][0]
 
 
+def _write_frames(frames_dir, n=7):
+    frames_dir.mkdir()
+    for i in range(n):
+        Image.new('RGB', (64, 48), color=(30 * i, 0, 0)).save(frames_dir / f'{i:03d}.jpg')
+
+
 def test_frames_to_video_encodes_every_frame_at_the_given_fps_and_removes_the_frames(tmp_path):
     frames_dir = tmp_path / 'frames'
-    frames_dir.mkdir()
-    for i in range(7):
-        Image.new('RGB', (64, 48), color=(30 * i, 0, 0)).save(frames_dir / f'{i:03d}.jpg')
+    _write_frames(frames_dir)
     video_path = tmp_path / 'video.mp4'
 
     camera_sweep_util.frames_to_video(frames_dir, video_path, fps=10)
@@ -71,4 +76,19 @@ def test_frames_to_video_encodes_every_frame_at_the_given_fps_and_removes_the_fr
     assert (stream['width'], stream['height']) == (64, 48)
     assert stream['r_frame_rate'] == '10/1'
     assert stream['nb_read_frames'] == '7'
+    # ffmpeg's default for JPEG input, as the quickstart camera sweep has always been encoded.
+    assert stream['pix_fmt'] == 'yuvj420p'
     assert not frames_dir.exists()
+
+
+def test_frames_to_video_can_encode_a_widely_playable_pixel_format(tmp_path):
+    frames_dir = tmp_path / 'frames'
+    _write_frames(frames_dir)
+    video_path = tmp_path / 'video.mp4'
+
+    camera_sweep_util.frames_to_video(frames_dir, video_path, fps=10, pix_fmt='yuv420p')
+
+    stream = _probe_video(video_path)
+    assert stream['pix_fmt'] == 'yuv420p'
+    assert stream['nb_read_frames'] == '7'
+
