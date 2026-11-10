@@ -109,6 +109,7 @@ class Trainer(BaseTrainer):
         ava_height = self.args.height
         ava_width = self.args.width
         max_captures = self.args.max_captures
+        segment = getattr(self.args, 'segment', None)
 
         nersemble_root = getattr(self.args, 'nersemble_dataset_directory', None)
         nersemble_subjects = ast.literal_eval(self.args.nersemble_subjects) if getattr(self.args, 'nersemble_subjects', None) else list()
@@ -133,7 +134,8 @@ class Trainer(BaseTrainer):
             deterministic_shuffle=False,
             require_verts=False,
             require_segmentation=False,
-            only_subjects=subjects
+            only_subjects=subjects,
+            segment=segment,
             )
             datasets = [ava_dataset]
             if nersemble_root is not None:
