@@ -1,12 +1,28 @@
 # PYTHONPATH=$(pwd) PYOPENGL_PLATFORM=egl conda run -n match --no-capture-output torchrun --standalone --nnodes=1 --nproc-per-node=1 scripts/match/eval_sequence.py --gin_configs configs/match/eval_sequence_SEN_a_good_morrow.gin
-# Sequence evaluation of the pretrained MATCH model (uv_res_1024, 860k) on every frame of TCE049's SEN_a_good_morrow_to_you_my_boy segment:
+# Sequence evaluation of the pretrained MATCH model (uv_res_1024, 860k) on all 40 frames of TCE049's SEN_a_good_morrow_to_you_my_boy segment:
 # one independent forward pass per frame with the 12 standard input cameras, rendered from the 3 held-out cameras with their real calibration.
-# Needs the TEMPEH predictions first: condor/run.py configs/tempeh/save_predictions_seq_SEN_a_good_morrow.yml
-# Leave PYTORCH_CUDA_ALLOC_CONF unset (expandable_segments OOMs on the 24 GB GPU).
-# Output (OUT_DIR): grid.mp4 (24 fps; panels: prediction and real image from the closest-to-frontal held-out camera, orbit),
-# preview.mp4 (the same grid, each source frame shown once for 1/PREVIEW_FPS s, to spot flicker quickly), metrics.json,
-# plot_image_metrics.png and plot_temporal_metrics.png (per-frame metrics against source frame ID),
-# config_<i>.gin (the files passed) and config_all.gin (every binding, includes resolved).
+#
+# Rerun from the repo root, in the `match` conda env (PYTHONPATH=$(pwd) makes a git worktree use its own `match` package):
+#   0. Quickstart data and weights: data/ava-256/20230807--0839--TCE049 (configs/data/download_ava256_quickstart.gin) and
+#      assets/pretrained_models/{match/uv_res_1024,tempeh}. RAFT-large weights download to ~/.cache/torch/hub on first use.
+#   1. Held-out cameras 402040, 401905, 402031 (images + foreground masks, 4TB tier, ~320 MB); check that all 3 zips appear in
+#      image/ and foreground_masks/, since the download script swallows errors:
+#        conda run -n match python condor/run.py configs/data/download_ava256_heldout.gin
+#   2. TEMPEH coarse meshes and UV maps of the 12 input cameras for every frame of the segment (~1 min on the GPU), written to AVA_UV_DIR:
+#        PYTHONPATH=$(pwd) PYOPENGL_PLATFORM=egl conda run -n match --no-capture-output python condor/run.py configs/tempeh/save_predictions_seq_SEN_a_good_morrow.yml
+#   3. Optional smoke check (3 frames, 1 held-out camera, ~2 min): configs/match/eval_sequence_smoketest.gin.
+#   4. The command on the first line. It needs a whole 24 GB GPU (nvidia-smi peaks at ~24.0 GB), so nothing else may hold GPU memory.
+#      Leave PYTORCH_CUDA_ALLOC_CONF unset: expandable_segments:True runs out of memory on the 24 GB GPU.
+#      Each MATCH run starts Xvfb on display :99, so run one at a time; after a crash, kill the orphan with pkill -f "[X]vfb -br.*:99".
+#      About 34 s per source frame plus ~2 min of RAFT on the CPU for the temporal metrics: ~25 min in total.
+#   5. Check the outputs: conda run -n match python -m pytest tests/test_eval_sequence_full_run.py
+#
+# Output (OUT_DIR): grid.mp4 (24 fps, 16 s, 2x2 panels: MATCH prediction and real image from the closest-to-frontal held-out camera 402040,
+# the bare TEMPEH coarse mesh from the same camera, and an orbit), preview.mp4 (the same grid, each source frame shown once for
+# 1/PREVIEW_FPS s, to spot flicker quickly), metrics.json (masked PSNR/SSIM/LPIPS per frame and held-out camera, raw flicker and
+# flow-aligned error per frame pair for prediction and real footage, means and worst frames), plot_image_metrics.png and
+# plot_temporal_metrics.png (per-frame metrics against source frame ID), config_<i>.gin (the files passed) and config_all.gin
+# (every binding, includes resolved).
 
 include 'assets/pretrained_models/match/uv_res_1024/config_0.gin'
 NAME = 'eval_sequence-SEN_a_good_morrow'
