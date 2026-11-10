@@ -100,3 +100,13 @@ def test_pixels_outside_mask_do_not_change_either_score():
 
   for baseline, changed in (flicker, aligned):
     assert changed.per_pair == pytest.approx(baseline.per_pair, rel=1e-6, abs=1e-7)
+
+
+def test_pixels_failing_forward_backward_check_are_ignored():
+  frames = translating_sequence(step=(3, 2))
+  forward = torch.tensor([-3.0, -2.0]).view(1, 2, 1, 1).expand(T - 1, 2, H, W)
+  backward = (-forward).clone()
+  backward[:, :, 50:70, 50:70] += 10.0  # wrong there; forward disagrees with it
+
+  scores = metric_util.flow_aligned_error(frames, make_masks(), flow=(forward, backward))
+  assert scores.per_pair == pytest.approx([0.0] * (T - 1), abs=1e-6)
