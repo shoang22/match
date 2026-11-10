@@ -17,10 +17,10 @@
 #      Each MATCH run starts Xvfb on display :99, so run one at a time; after a crash, kill the orphan with pkill -f "[X]vfb -br.*:99".
 #      30-50 s per source frame (the forward pass gets slower once the GPU memory is full) plus ~1 min of RAFT on the CPU
 #      for the temporal metrics and video encoding: ~27 min in total.
-#   5. Check the outputs: conda run -n match python -m pytest tests/test_eval_sequence_full_run.py
+#   5. Check the outputs: conda run -n match python -m pytest tests/test_eval_sequence_outputs.py
 #
-# Output (OUT_DIR): grid.mp4 (24 fps, 16 s, 2x2 panels: MATCH prediction and real image from the closest-to-frontal held-out camera 402040,
-# the bare TEMPEH coarse mesh from the same camera, and an orbit), preview.mp4 (the same grid, each source frame shown once for
+# Output (OUT_DIR): grid.mp4 (h264 yuv420p, 24 fps, 16 s, 2x2 panels: MATCH prediction and real image from the closest-to-frontal held-out camera 402040,
+# the bare TEMPEH coarse mesh from the same camera, and an orbit once round the head), preview.mp4 (the same grid, each source frame shown once for
 # 1/PREVIEW_FPS s, to spot flicker quickly), metrics.json (masked PSNR/SSIM/LPIPS per frame and held-out camera, raw flicker and
 # flow-aligned error per frame pair for prediction and real footage, means and worst frames), plot_image_metrics.png and
 # plot_temporal_metrics.png (per-frame metrics against source frame ID), config_<i>.gin (the files passed) and config_all.gin
