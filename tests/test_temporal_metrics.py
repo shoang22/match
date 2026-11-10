@@ -22,6 +22,13 @@ def static_sequence(seed: int = 0) -> torch.Tensor:
   return make_canvas(seed)[:, :H, :W].expand(T, 3, H, W).clone()
 
 
+def translating_sequence(seed: int = 0, step=(3, 2)) -> torch.Tensor:
+  """A window sliding across a larger texture by `step` (dx, dy) pixels per frame."""
+  canvas = make_canvas(seed)
+  dx, dy = step
+  return torch.stack([canvas[:, t * dy:t * dy + H, t * dx:t * dx + W] for t in range(T)])
+
+
 def make_masks() -> torch.Tensor:
   """Centred square foreground in every frame, shape (T, H, W), bool."""
   masks = torch.zeros(T, H, W, dtype=torch.bool)
@@ -40,3 +47,21 @@ def test_static_sequence_has_zero_flow_aligned_error():
   assert len(scores.per_pair) == T - 1
   assert scores.per_pair == pytest.approx([0.0] * (T - 1), abs=1e-3)
   assert scores.mean == pytest.approx(0.0, abs=1e-3)
+
+
+def test_translating_sequence_has_near_zero_flow_aligned_error_but_nonzero_raw_flicker():
+  frames, masks = translating_sequence(), make_masks()
+  flicker = metric_util.raw_flicker(frames, masks)
+  aligned = metric_util.flow_aligned_error(frames, masks)
+
+  assert all(v > 0.02 for v in flicker.per_pair)
+  # RAFT is off by ~0.05 px here, which leaves a few % of the raw change.
+  assert all(a < 0.05 * f for a, f in zip(aligned.per_pair, flicker.per_pair))
+
+
+def test_given_exact_flow_aligns_a_translating_sequence():
+  frames = translating_sequence(step=(3, 2))
+  # Content moves by (-3, -2) px from each frame to the next.
+  forward = torch.tensor([-3.0, -2.0]).view(1, 2, 1, 1).expand(T - 1, 2, H, W)
+  scores = metric_util.flow_aligned_error(frames, make_masks(), flow=(forward, -forward))
+  assert scores.per_pair == pytest.approx([0.0] * (T - 1), abs=1e-6)
