@@ -3,7 +3,9 @@
 Shared by scripts/match/save_camera_sweeps.py and the sequence evaluation run.
 """
 import math
+import shutil
 
+import ffmpeg
 import numpy as np
 import torch
 
@@ -105,3 +107,19 @@ def sweep_intrinsics(fxfycxcy, focal_scale=0.75):
     fx = fxfycxcy[0, 0, 0].item() * focal_scale
     fy = fxfycxcy[0, 0, 1].item() * focal_scale
     return torch.tensor([fx, fy, 0.5, 0.5], dtype=torch.float32, device=fxfycxcy.device)
+
+
+def frames_to_video(frames_dir, video_path, fps):
+    """
+    Encodes all *.jpg files in frames_dir (in file-name order) into a video at
+    video_path with the given frame rate, overwriting an existing file. Deletes
+    frames_dir afterwards.
+    """
+    (
+      ffmpeg
+      .input(f'{frames_dir}/*.jpg', pattern_type='glob', framerate=fps)
+      .output(f'{video_path}')
+      .overwrite_output()
+      .run()
+    )
+    shutil.rmtree(frames_dir)
