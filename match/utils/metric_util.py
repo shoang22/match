@@ -1,7 +1,8 @@
-"""Masked image-quality metrics (PSNR, SSIM, LPIPS) on image tensors.
+"""Masked image-quality (PSNR, SSIM, LPIPS) and temporal-consistency metrics.
 
 Plain functions with no dependence on the runner, dataset or model, so they run
-on CPU in tests. Keep imports light here: torch and lpips only.
+on CPU in tests. Keep imports light here: torch, plus lpips and torchvision
+imported lazily where needed.
 
 Conventions for every image metric:
   pred, real: float tensors in [0, 1], shape (3, H, W) or (1, 3, H, W).
@@ -12,6 +13,7 @@ Conventions for every image metric:
 
 import functools
 import math
+from typing import NamedTuple
 
 import torch
 
@@ -113,3 +115,171 @@ def masked_lpips(pred: torch.Tensor, real: torch.Tensor, mask: torch.Tensor,
   with torch.no_grad():
     lpips_map = model(pred, real, normalize=True)  # (1, 1, H, W)
   return lpips_map[mask].mean().item()
+
+
+# --- Temporal consistency -----------------------------------------------------
+#
+# Conventions for every temporal metric:
+#   frames: float tensor in [0, 1], shape (T, 3, H, W), T >= 2.
+#   masks: foreground masks, shape (T, H, W) or (T, 1, H, W). Bool, or float
+#     where values > 0.5 count as foreground.
+#   Pair t compares frames t and t + 1.
+
+
+class TemporalScores(NamedTuple):
+  """per_pair[t] scores frames (t, t + 1); mean is over the finite values."""
+  per_pair: list
+  mean: float
+
+
+def _prepare_sequence(frames: torch.Tensor, masks: torch.Tensor):
+  """Return frames as (T, C, H, W) float and masks as (T, 1, H, W) bool."""
+  if frames.dim() != 4 or frames.shape[0] < 2:
+    raise ValueError(f'expected frames (T >= 2, C, H, W), got {tuple(frames.shape)}')
+  t, _, h, w = frames.shape
+  if masks.dtype != torch.bool:
+    masks = masks > 0.5
+  if masks.dim() == 3:
+    masks = masks[:, None]
+  if tuple(masks.shape) != (t, 1, h, w):
+    raise ValueError(f'masks {tuple(masks.shape)} do not match frames {tuple(frames.shape)}')
+  return frames.float(), masks.to(frames.device)
+
+
+def _masked_mean_abs(a: torch.Tensor, b: torch.Tensor, valid: torch.Tensor) -> float:
+  """Mean |a - b| over the valid pixels (all channels); nan if none are valid."""
+  m = valid.expand_as(a)
+  if not m.any():
+    return math.nan
+  return (a[m] - b[m]).abs().mean().item()
+
+
+def _scores(per_pair) -> TemporalScores:
+  finite = [v for v in per_pair if math.isfinite(v)]
+  return TemporalScores(per_pair, sum(finite) / len(finite) if finite else math.nan)
+
+
+def raw_flicker(frames: torch.Tensor, masks: torch.Tensor) -> TemporalScores:
+  """Mean absolute change between consecutive frames, inside the mask.
+
+  Pair t averages |frame[t+1] - frame[t]| over all channels of the pixels that
+  are foreground in both frames. A pair with no such pixels scores nan.
+  """
+  frames, masks = _prepare_sequence(frames, masks)
+  return _scores([
+      _masked_mean_abs(frames[i + 1], frames[i], masks[i] & masks[i + 1])
+      for i in range(frames.shape[0] - 1)
+  ])
+
+
+@functools.lru_cache(maxsize=None)
+def _raft_model(size: str):
+  from torchvision.models import optical_flow  # pylint: disable=g-import-not-at-top
+  if size == 'large':
+    model = optical_flow.raft_large(weights=optical_flow.Raft_Large_Weights.DEFAULT)
+  elif size == 'small':
+    model = optical_flow.raft_small(weights=optical_flow.Raft_Small_Weights.DEFAULT)
+  else:
+    raise ValueError(f"size must be 'large' or 'small', got {size!r}")
+  return model.eval().requires_grad_(False)
+
+
+def _raft(img1: torch.Tensor, img2: torch.Tensor, size: str, batch_size: int) -> torch.Tensor:
+  """RAFT flow from img1 to img2 (N, 3, H, W) in [0, 1]; returns (N, 2, H, W)."""
+  model = _raft_model(size).to(img1.device)
+  h, w = img1.shape[-2:]
+  # RAFT needs H and W divisible by 8 and at least 128.
+  pad = [0, max(128, w + (-w) % 8) - w, 0, max(128, h + (-h) % 8) - h]
+  out = []
+  with torch.no_grad():
+    for i in range(0, img1.shape[0], batch_size):
+      a, b = (torch.nn.functional.pad(x[i:i + batch_size] * 2 - 1, pad, mode='replicate')
+              for x in (img1, img2))
+      out.append(model(a, b)[-1][..., :h, :w])
+  return torch.cat(out)
+
+
+def raft_flow(frames: torch.Tensor, size: str = 'large', batch_size: int = 8):
+  """Estimate optical flow between consecutive frames with torchvision RAFT.
+
+  Args:
+    frames: (T, 3, H, W) float in [0, 1].
+    size: 'large' or 'small' RAFT. Standard weights download on first use.
+    batch_size: frame pairs per RAFT call (lower it if memory is tight).
+
+  Returns:
+    (forward, backward), each (T - 1, 2, H, W) in pixels, channels (dx, dy).
+    forward[t] maps frame t to frame t + 1: pixel p of frame t moves to
+    p + forward[t](p). backward[t] maps frame t + 1 back to frame t.
+  """
+  frames = frames.float()
+  first, second = frames[:-1], frames[1:]
+  flows = _raft(torch.cat([first, second]), torch.cat([second, first]), size, batch_size)
+  return flows[:len(first)], flows[len(first):]
+
+
+def _warp(x: torch.Tensor, flow: torch.Tensor) -> torch.Tensor:
+  """Sample x (N, C, H, W) at p + flow(p) for each pixel p, bilinear, zeros outside."""
+  _, _, h, w = x.shape
+  ys, xs = torch.meshgrid(torch.arange(h, device=x.device, dtype=x.dtype),
+                          torch.arange(w, device=x.device, dtype=x.dtype), indexing='ij')
+  gx = (xs + flow[:, 0]) * (2 / max(w - 1, 1)) - 1
+  gy = (ys + flow[:, 1]) * (2 / max(h - 1, 1)) - 1
+  return torch.nn.functional.grid_sample(
+      x, torch.stack([gx, gy], dim=-1), mode='bilinear', padding_mode='zeros',
+      align_corners=True)
+
+
+def _consistent(forward: torch.Tensor, backward: torch.Tensor,
+                alpha1: float = 0.01, alpha2: float = 0.5) -> torch.Tensor:
+  """Forward-backward check on the frame t + 1 grid (Sundaram et al. 2010).
+
+  Pixel p of frame t + 1 lands at q = p + backward(p) in frame t. The flow is
+  reliable there if following forward(q) brings it back near p:
+    |forward(q) + backward(p)|^2 < alpha1 (|forward(q)|^2 + |backward(p)|^2) + alpha2
+  Returns (N, 1, H, W) bool.
+  """
+  fwd_at_q = _warp(forward, backward)
+  lhs = (fwd_at_q + backward).pow(2).sum(1, keepdim=True)
+  rhs = alpha1 * (fwd_at_q.pow(2).sum(1, keepdim=True)
+                  + backward.pow(2).sum(1, keepdim=True)) + alpha2
+  return lhs < rhs
+
+
+def flow_aligned_error(frames: torch.Tensor, masks: torch.Tensor, flow=None,
+                       reference: torch.Tensor = None, raft_size: str = 'large',
+                       raft_batch_size: int = 8) -> TemporalScores:
+  """Mean absolute error left after warping each frame onto the next with flow.
+
+  For pair t, frame t is backward-warped onto frame t + 1 and |frame[t+1] -
+  warped frame[t]| is averaged over all channels of the valid pixels. A pixel p
+  of frame t + 1 is valid when it is foreground in mask t + 1, every pixel of
+  frame t that the bilinear warp reads from is foreground in mask t (and inside
+  the image), and the flow passes the forward-backward consistency check. A
+  pair with no valid pixels scores nan.
+
+  The flow comes from, in order of precedence:
+    flow: (forward, backward) as returned by `raft_flow`, e.g. estimated once on
+      the real footage and reused for the prediction so both are aligned with
+      the same motion.
+    reference: a (T, 3, H, W) sequence to estimate flow on with RAFT.
+    otherwise RAFT on `frames` itself.
+  Pixels outside the mask never enter the error. They can only change the score
+  through the flow, when the flow is estimated from these same frames.
+  """
+  frames, masks = _prepare_sequence(frames, masks)
+  if flow is None:
+    flow = raft_flow(frames if reference is None else reference.to(frames.device),
+                     raft_size, raft_batch_size)
+  forward, backward = (f.to(frames.device).float() for f in flow)
+  n = frames.shape[0] - 1
+  expected = (n, 2, *frames.shape[-2:])
+  if tuple(forward.shape) != expected or tuple(backward.shape) != expected:
+    raise ValueError(f'flow {tuple(forward.shape)}, {tuple(backward.shape)} '
+                     f'does not match {expected}')
+
+  warped = _warp(frames[:-1], backward)
+  # A warped mask of 1 means every bilinear tap with non-zero weight was foreground.
+  warped_mask = _warp(masks[:-1].float(), backward) > 0.999
+  valid = masks[1:] & warped_mask & _consistent(forward, backward)
+  return _scores([_masked_mean_abs(frames[i + 1], warped[i], valid[i]) for i in range(n)])
