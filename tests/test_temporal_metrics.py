@@ -81,3 +81,22 @@ def test_per_frame_noise_increases_both_scores(make_sequence):
     before, after = score(clean), score(noisy)
     assert all(a > b for a, b in zip(after.per_pair, before.per_pair))
     assert after.mean > before.mean
+
+
+def test_pixels_outside_mask_do_not_change_either_score():
+  frames = translating_sequence(step=(3, 2))
+  # Foreground square that follows the content, so each frame's mask differs.
+  masks = torch.zeros(T, H, W, dtype=torch.bool)
+  for t in range(T):
+    masks[t, 32 - 2 * t:96 - 2 * t, 32 - 3 * t:96 - 3 * t] = True
+  scribbled = torch.stack([
+      torch.where(masks[t], frames[t], make_canvas(100 + t)[:, :H, :W]) for t in range(T)])
+
+  flicker = (metric_util.raw_flicker(frames, masks),
+             metric_util.raw_flicker(scribbled, masks))
+  # Flow estimated on the clean reference, so the background can't steer it.
+  aligned = (metric_util.flow_aligned_error(frames, masks, reference=frames),
+             metric_util.flow_aligned_error(scribbled, masks, reference=frames))
+
+  for baseline, changed in (flicker, aligned):
+    assert changed.per_pair == pytest.approx(baseline.per_pair, rel=1e-6, abs=1e-7)
