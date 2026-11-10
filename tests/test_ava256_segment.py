@@ -1,14 +1,13 @@
 """Selecting one Ava-256 segment by name (issue #3).
 
-Run from the repo root: `match.data.ava256_dataset` opens assets with cwd-relative paths at import time.
+`match.data.ava256_dataset` opens assets with repo-relative paths at import time; conftest.py runs the tests
+from the repo root.
 """
-from pathlib import Path
-
 import pytest
 
 from match.data.ava256_dataset import AvaMultiCaptureDataset, AvaSingleCaptureDataset
+from tce049 import AVA_ROOT, SEGMENT, SEGMENT_FRAMES
 
-AVA_ROOT = Path('data/ava-256')
 needs_ava_data = pytest.mark.skipif(
     not AVA_ROOT.exists(), reason='needs data/ava-256 with capture TCE049 (symlink it into a worktree)'
 )
@@ -62,9 +61,7 @@ def tce049_frame_ids(**kwargs):
 
 @needs_ava_data
 def test_tce049_first_sentence_has_its_40_frames_in_order():
-    # 4TB tier keeps every 12th recorded frame: 32885, 32897, ..., 33353.
-    expected = [str(32885 + 12 * k) for k in range(40)]
-    assert tce049_frame_ids(segment='SEN_a_good_morrow_to_you_my_boy', frame_stride=1) == expected
+    assert tce049_frame_ids(segment=SEGMENT, frame_stride=1) == SEGMENT_FRAMES
 
 
 @needs_ava_data

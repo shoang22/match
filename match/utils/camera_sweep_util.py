@@ -115,16 +115,19 @@ def sweep_intrinsics(fxfycxcy, focal_scale=SWEEP_FOCAL_SCALE):
     return torch.tensor([fx, fy, 0.5, 0.5], dtype=torch.float32, device=fxfycxcy.device)
 
 
-def frames_to_video(frames_dir, video_path, fps):
+def frames_to_video(frames_dir, video_path, fps, pix_fmt=None):
     """
     Encodes all *.jpg files in frames_dir (in file-name order) into a video at
     video_path with the given frame rate, overwriting an existing file. Deletes
     frames_dir afterwards.
+    pix_fmt: output pixel format, e.g. 'yuv420p' for players that don't handle
+    the full-range yuvj420p that ffmpeg picks for JPEG input by default (None).
     """
+    output_kwargs = {} if pix_fmt is None else {'pix_fmt': pix_fmt}
     (
       ffmpeg
       .input(f'{frames_dir}/*.jpg', pattern_type='glob', framerate=fps)
-      .output(f'{video_path}')
+      .output(f'{video_path}', **output_kwargs)
       .overwrite_output()
       .run()
     )
