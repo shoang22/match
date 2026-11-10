@@ -1,4 +1,4 @@
-"""Outputs of the sequence-evaluation smoke run (#8).
+"""Outputs of the sequence-evaluation smoke run (#8, #9).
 
 Checks the experiment folder written by the smoke config: the grid video's timing, size, panels and
 holds, the metrics JSON, and the config copies. Skipped until the smoke run has been done (it needs the
@@ -33,6 +33,7 @@ GRID_COLS = 2
 VIDEO_W, VIDEO_H = GRID_COLS * PANEL_W, 2 * (LABEL_H + PANEL_H)  # 2x2 grid of labelled panels
 PREDICTION_LABEL = f'MATCH prediction (cam {HELDOUT_CAMERA})'
 REAL_LABEL = f'Real held-out (cam {HELDOUT_CAMERA})'
+TEMPEH_LABEL = f'TEMPEH coarse mesh (cam {HELDOUT_CAMERA})'
 ORBIT_LABEL = 'Orbit'
 ORBIT_FRAMES = 24  # the smoke config's short orbit: back at the frontal start pose after 1 s
 
@@ -53,6 +54,11 @@ def video_frames():
               .output('pipe:', format='rawvideo', pix_fmt='rgb24')
               .run(capture_stdout=True, quiet=True))
     return np.frombuffer(out, np.uint8).reshape(-1, VIDEO_H, VIDEO_W, 3).astype(np.float32)
+
+
+def silhouette(image):
+    """Foreground of a panel image on a white background."""
+    return image.min(axis=-1) < 200
 
 
 def test_grid_video_is_24_fps_with_the_true_duration_and_size():
@@ -88,8 +94,7 @@ def frame_changes(tile):
 
 def test_panels_are_labelled(metrics, video_frames):
     panels = metrics['video']['panels']
-    assert panels[:2] == [PREDICTION_LABEL, REAL_LABEL]
-    assert panels[-1] == ORBIT_LABEL
+    assert panels == [PREDICTION_LABEL, REAL_LABEL, TEMPEH_LABEL, ORBIT_LABEL]
     assert len(video_frames) == N_OUTPUT_FRAMES
     for label in panels:
         assert panel_frames(metrics, video_frames, label)[:, :LABEL_H].max() > 200, f"panel '{label}' has no label text"
@@ -97,11 +102,11 @@ def test_panels_are_labelled(metrics, video_frames):
 
 def test_static_panels_hold_still_between_source_frames(metrics, video_frames):
     source = metrics['output_frames']
-    for label in [PREDICTION_LABEL, REAL_LABEL]:
+    for label in [PREDICTION_LABEL, REAL_LABEL, TEMPEH_LABEL]:
         change = frame_changes(panel_frames(metrics, video_frames, label))  # change into frame k+1
         within_hold = [c for k, c in enumerate(change) if source[k + 1] == source[k]]
         at_new_frame = [c for k, c in enumerate(change) if source[k + 1] != source[k]]
-        # Held frames are repeats (codec noise only), never blends; both panels switch at the same output frames.
+        # Held frames are repeats (codec noise only), never blends; static panels all switch at the same output frames.
         assert max(within_hold) < 0.5, (label, max(within_hold))
         assert min(at_new_frame) > 2 * max(within_hold), (label, at_new_frame, max(within_hold))
 
@@ -124,6 +129,20 @@ def test_orbit_length_comes_from_the_smoke_config(metrics, video_frames):
     back_at_start = np.abs(orbit[ORBIT_FRAMES] - orbit[0]).mean()
     assert back_at_start < 0.5 * np.median(steps), (back_at_start, np.median(steps))
     assert metrics['output_frames'][ORBIT_FRAMES] != metrics['output_frames'][0]
+
+
+def test_tempeh_mesh_lines_up_with_the_head_in_the_prediction_and_real_panels(metrics, video_frames):
+    source = metrics['output_frames']
+    first_of_each_frame = [source.index(f) for f in FRAMES]
+    for k in first_of_each_frame:
+        mesh, pred, real = (silhouette(panel_frames(metrics, video_frames, label)[k, LABEL_H:])
+                            for label in [TEMPEH_LABEL, PREDICTION_LABEL, REAL_LABEL])
+        assert 0.05 < mesh.mean() < 0.8, f'output frame {k}: mesh covers {mesh.mean():.2f} of the panel'
+        # The coarse mesh has no hair or shoulders, so it sits inside the head rather than matching its outline.
+        # Aligned, 99.7% of it lies on the head; shifting it by 20 px drops that to ~97%.
+        for name, head in [('prediction', pred), ('real', real)]:
+            inside = (mesh & head).sum() / mesh.sum()
+            assert inside > 0.98, f'output frame {k}: {inside:.3f} of the mesh lies on the {name} head'
 
 
 def test_metrics_are_finite_for_every_frame_and_heldout_camera(metrics):
