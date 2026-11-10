@@ -3,7 +3,10 @@
 # one independent forward pass per frame with the 12 standard input cameras, rendered from the 3 held-out cameras with their real calibration.
 # Needs the TEMPEH predictions first: condor/run.py configs/tempeh/save_predictions_seq_SEN_a_good_morrow.yml
 # Leave PYTORCH_CUDA_ALLOC_CONF unset (expandable_segments OOMs on the 24 GB GPU).
-# Output (OUT_DIR): grid.mp4 (24 fps; panels: prediction and real image from the closest-to-frontal held-out camera, orbit), metrics.json, config_<i>.gin (the files passed) and config_all.gin (every binding, includes resolved).
+# Output (OUT_DIR): grid.mp4 (24 fps; panels: prediction and real image from the closest-to-frontal held-out camera, orbit),
+# preview.mp4 (the same grid, each source frame shown once for 1/PREVIEW_FPS s, to spot flicker quickly), metrics.json,
+# plot_image_metrics.png and plot_temporal_metrics.png (per-frame metrics against source frame ID),
+# config_<i>.gin (the files passed) and config_all.gin (every binding, includes resolved).
 
 include 'assets/pretrained_models/match/uv_res_1024/config_0.gin'
 NAME = 'eval_sequence-SEN_a_good_morrow'
@@ -18,6 +21,7 @@ SEGMENT = 'SEN_a_good_morrow_to_you_my_boy'
 FRAME_STRIDE = 1  # applied within the segment; the 4TB frame list already has every 12th recorded frame
 NFRAMES = -1      # all frames of the segment
 CAPTURE_FPS = 30  # recording rate of the Ava-256 rig; frame IDs count recorded frames
+PREVIEW_FPS = 10  # source frames per second in preview.mp4 (the source has 2.5 per second)
 # TEMPEH coarse meshes and UV maps for every frame of the segment (#6)
 AVA_UV_DIR = 'data/tempeh_predictions/ava-256/seq_SEN_a_good_morrow/ava-256'
 AVA_SAPIENS_SEG_DIR = None
@@ -40,6 +44,7 @@ eval_sequence:
   heldout_camera_ids = %HELDOUT_CAMERA_IDS
   capture_fps = %CAPTURE_FPS
   fps = 24
+  preview_fps = %PREVIEW_FPS
 
 Options:
   base_folder = %OUT_DIR
