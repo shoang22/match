@@ -3,7 +3,7 @@
 # one independent forward pass per frame with the 12 standard input cameras, rendered from the 3 held-out cameras with their real calibration.
 # Needs the TEMPEH predictions first: condor/run.py configs/tempeh/save_predictions_seq_SEN_a_good_morrow.yml
 # Leave PYTORCH_CUDA_ALLOC_CONF unset (expandable_segments OOMs on the 24 GB GPU).
-# Output (OUT_DIR): grid.mp4 (24 fps), metrics.json, config_<i>.gin (the files passed) and config_all.gin (every binding, includes resolved).
+# Output (OUT_DIR): grid.mp4 (24 fps; panels: prediction and real image from the closest-to-frontal held-out camera, orbit), metrics.json, config_<i>.gin (the files passed) and config_all.gin (every binding, includes resolved).
 
 include 'assets/pretrained_models/match/uv_res_1024/config_0.gin'
 NAME = 'eval_sequence-SEN_a_good_morrow'
@@ -26,6 +26,11 @@ AVA_SAPIENS_SEG_DIR = None
 # The dataset picks the nearest non-input camera for each angle; the run checks that it picked exactly these IDs.
 HELDOUT_CAMERA_IDS = ['402040', '401905', '402031']
 HELDOUT_CAMERA_ANGLES = [[7.7, 24.0], [-31.0, 4.7], [75.6, -1.5]]
+
+# Orbit panel: the camera-sweep path (default angle range and intrinsics), one pose per 24 fps video frame,
+# starting and ending frontal and looping every ORBIT_FRAMES frames (200 = the sweep script's default, 8.3 s).
+ORBIT_FRAMES = 200
+OrbitPanel.orbit_frames = %ORBIT_FRAMES
 
 condor_name/join_strings.strings = ['.', %NAME, '-', %CKPT]
 cmd/join_strings.strings = ['torchrun --standalone --nnodes=1 --nproc-per-node=', %N_GPUS, ' scripts/match/eval_sequence.py --gin_configs __CONFIG__']
