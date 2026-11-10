@@ -38,6 +38,7 @@ def build_panels(fixed_view_camera):
     return [
         seq_panels.PredictionPanel(fixed_view_camera),
         seq_panels.RealPanel(fixed_view_camera),
+        seq_panels.OrbitPanel(),  # orbit_frames from the config
     ]
 
 

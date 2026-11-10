@@ -8,8 +8,13 @@ scripts/match/eval_sequence.py. The layout code doesn't change.
 """
 import math
 
+import gin
 import numpy as np
+import torch
 from PIL import Image, ImageDraw, ImageFont
+
+from match.utils.camera_sweep_util import (SWEEP_FOCAL_SCALE, SWEEP_HORIZ_RANGE_DEG, SWEEP_VERT_RANGE_DEG,
+                                           generate_camera_sweep_extrinsics, sweep_intrinsics)
 
 LABEL_HEIGHT = 32
 LABEL_FONT_SIZE = 22
@@ -52,6 +57,36 @@ class RealPanel(StaticPanel):
 
     def image(self, ctx):
         return ctx.fixed_view.real_on_background(1.0)
+
+
+@gin.configurable
+class OrbitPanel(Panel):
+    """A slow orbit around the head while time plays, one camera pose per grid-video frame.
+
+    The path is the camera-sweep path (scripts/match/save_camera_sweeps.py) with its default angle range and
+    intrinsics, rendered on a centred copy of the frame's Gaussians. It starts and ends at the frontal pose and
+    loops every `orbit_frames` video frames. The source frame shown changes with the other panels.
+    """
+    label = 'Orbit'
+
+    def __init__(self, orbit_frames=200, vert_range_deg=SWEEP_VERT_RANGE_DEG, horiz_range_deg=SWEEP_HORIZ_RANGE_DEG,
+                 focal_scale=SWEEP_FOCAL_SCALE, render_chunk=8):
+        # One extra step, dropped, so the frontal end pose isn't shown twice when the orbit loops.
+        path = generate_camera_sweep_extrinsics(
+            vert_range_deg=vert_range_deg, horiz_range_deg=horiz_range_deg, num_steps=orbit_frames + 1)
+        self.C2W = torch.from_numpy(path[:orbit_frames]).float()
+        self.focal_scale = focal_scale
+        self.render_chunk = render_chunk
+
+    def render(self, ctx):
+        gaussians = dict(ctx.gaussians)
+        xyz = gaussians['xyz']
+        gaussians['xyz'] = xyz - xyz.mean(dim=-2, keepdim=True)  # the path looks at the origin
+        C2W = self.C2W[[k % len(self.C2W) for k in ctx.output_frame_indices]].to(xyz.device)
+        fxfycxcy = sweep_intrinsics(ctx.batch['fxfycxcy'], self.focal_scale).expand(len(C2W), 4)
+        images = [ctx.render(C2W[i:i + self.render_chunk], fxfycxcy[i:i + self.render_chunk], gaussians=gaussians)
+                  for i in range(0, len(C2W), self.render_chunk)]
+        return list(torch.cat(images))
 
 
 def _to_uint8(img):
