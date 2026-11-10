@@ -2,8 +2,12 @@
 
 Run from the repo root: conda run -n match python -m pytest tests/test_camera_sweep_util.py
 """
+import json
+import subprocess
+
 import numpy as np
 import torch
+from PIL import Image
 
 from match.utils import camera_sweep_util
 
@@ -43,3 +47,27 @@ def test_sweep_intrinsics_scale_the_first_input_view_focal_and_center_the_princi
 
   assert intrinsics.dtype == torch.float32
   torch.testing.assert_close(intrinsics, torch.tensor([0.9, 1.2, 0.5, 0.5]))
+
+
+def _probe_video(path):
+  out = subprocess.run(
+      ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+       '-show_entries', 'stream=width,height,r_frame_rate,nb_read_frames', '-of', 'json', str(path)],
+      check=True, capture_output=True, text=True).stdout
+  return json.loads(out)['streams'][0]
+
+
+def test_frames_to_video_encodes_every_frame_at_the_given_fps_and_removes_the_frames(tmp_path):
+  frames_dir = tmp_path / 'frames'
+  frames_dir.mkdir()
+  for i in range(7):
+    Image.new('RGB', (64, 48), color=(30 * i, 0, 0)).save(frames_dir / f'{i:03d}.jpg')
+  video_path = tmp_path / 'video.mp4'
+
+  camera_sweep_util.frames_to_video(frames_dir, video_path, fps=10)
+
+  stream = _probe_video(video_path)
+  assert (stream['width'], stream['height']) == (64, 48)
+  assert stream['r_frame_rate'] == '10/1'
+  assert stream['nb_read_frames'] == '7'
+  assert not frames_dir.exists()
