@@ -38,6 +38,11 @@ def probe_video(path):
     return stream, float(probe['format']['duration'])
 
 
+def bindings(config_path):
+    """The config's lines without comment lines."""
+    return [line for line in config_path.read_text().splitlines() if not line.lstrip().startswith('#')]
+
+
 def is_finite_float(value):
     return isinstance(value, float) and math.isfinite(value)
 
@@ -113,5 +118,6 @@ def test_plots_and_config_copies_are_written(metrics):
     for name in PLOTS:
         with Image.open(OUT_DIR / name) as image:
             assert image.format == 'PNG'
-    assert (OUT_DIR / 'config_0.gin').read_text() == FULL_CONFIG.read_text()
+    # Same bindings as the committed config; its header comment may have been edited since the run.
+    assert bindings(OUT_DIR / 'config_0.gin') == bindings(FULL_CONFIG)
     assert f"OUT_DIR = '{OUT_DIR}'" in (OUT_DIR / 'config_all.gin').read_text()

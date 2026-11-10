@@ -14,7 +14,8 @@
 #   4. The command on the first line. It needs a whole 24 GB GPU (nvidia-smi peaks at ~24.0 GB), so nothing else may hold GPU memory.
 #      Leave PYTORCH_CUDA_ALLOC_CONF unset: expandable_segments:True runs out of memory on the 24 GB GPU.
 #      Each MATCH run starts Xvfb on display :99, so run one at a time; after a crash, kill the orphan with pkill -f "[X]vfb -br.*:99".
-#      About 34 s per source frame plus ~2 min of RAFT on the CPU for the temporal metrics: ~25 min in total.
+#      30-50 s per source frame (the forward pass gets slower once the GPU memory is full) plus ~1 min of RAFT on the CPU
+#      for the temporal metrics and video encoding: ~27 min in total.
 #   5. Check the outputs: conda run -n match python -m pytest tests/test_eval_sequence_full_run.py
 #
 # Output (OUT_DIR): grid.mp4 (24 fps, 16 s, 2x2 panels: MATCH prediction and real image from the closest-to-frontal held-out camera 402040,
