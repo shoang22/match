@@ -2,11 +2,7 @@
 # conda run -n match python condor/run.py configs/data/download_ava256_heldout.gin
 # The script swallows worker errors: afterwards check that image/ and foreground_masks/ contain cam<ID>.zip for each ID and that the zips open.
 #
-# Held-out cameras, with [az, el] in degrees from camera_calibration.json (same convention as data_util.sample_cameras_from_angles).
-# Use these exact angles as extra_camera_angles, not the rough targets in brackets:
-#   402040 [7.7, 24.0]    interpolating, target [10, 10]; closest to frontal (fixed novel viewpoint)
-#   401905 [-31.0, 4.7]   interpolating, target [-30, 15] (the closer 401883 [-24.6, 21.8] lacks frames 32897, 32909, 32933 of SEN_a_good_morrow_to_you_my_boy)
-#   402031 [75.6, -1.5]   extrapolating, target [60, 0] (input cameras span az -38.7..42.3, el -13.0..38.6)
+# The cameras, their exact angles and why they were picked are listed with HELDOUT_CAMERA_IDS in configs/match/eval_sequence_SEN_a_good_morrow.gin.
 
 NAME = "download_ava256_heldout"
 OUT_DIR = 'data/ava-256'

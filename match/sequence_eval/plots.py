@@ -17,16 +17,6 @@ IMAGE_METRICS_PLOT = 'plot_image_metrics.png'
 TEMPORAL_METRICS_PLOT = 'plot_temporal_metrics.png'
 MAX_LABELLED_FRAMES = 40  # up to this many source frames, each one is a labelled x tick
 
-IMAGE_METRIC_LABELS = {
-    'psnr': 'Masked PSNR (dB, higher is better)',
-    'ssim': 'Masked SSIM (higher is better)',
-    'lpips': 'Masked LPIPS (lower is better)',
-}
-TEMPORAL_SCORE_LABELS = {
-    'raw_flicker': 'Raw flicker (lower is better)',
-    'flow_aligned_error': 'Flow-aligned error (lower is better)',
-}
-
 
 def _finite_or_nan(value):
     """Non-finite values (inf PSNR for identical images, nan for no valid pixels) are left as gaps."""
@@ -66,7 +56,7 @@ def plot_image_metrics(path, metrics):
             ax.plot(x, [_finite_or_nan(per_frame[f][camera][name]) for f in frames], marker='o', markersize=3,
                     label=f'cam {camera}')
         ax.set_ylabel(name.upper())
-        ax.set_title(IMAGE_METRIC_LABELS.get(name, name))
+        ax.set_title(IMAGE_METRICS[name].label)
     _finish_axes(axes, frames, 'Source frame ID')
     fig.suptitle('Image quality at the held-out cameras, inside the foreground mask')
     _save(fig, path)
@@ -86,7 +76,7 @@ def plot_temporal_metrics(path, metrics):
             ax.plot(x, [_finite_or_nan(temporal['per_pair'][f][source][score]) for f in pairs], marker='o',
                     markersize=3, label=source)
         ax.set_ylabel('mean |change|')
-        ax.set_title(TEMPORAL_SCORE_LABELS.get(score, score))
+        ax.set_title(TEMPORAL_SCORES[score].label)
     _finish_axes(axes, metrics['frames'], 'Source frame ID (change from the previous source frame)')
     fig.suptitle(f'Temporal consistency at the fixed view (cam {temporal["camera"]})')
     _save(fig, path)

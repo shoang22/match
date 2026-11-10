@@ -47,8 +47,7 @@ def contexts(pred, real, frames=FRAMES, mask=None):
     for i, frame in enumerate(frames):
         view = HeldOutView(CAMERA, pred[i], real[i], mask, torch.eye(4), torch.tensor([1.0, 1.0, 0.5, 0.5]))
         out.append(FrameContext(runner=None, frame_index=i, frame_id=frame, batch=None, gaussians={},
-                                heldout={CAMERA: view}, fixed_view_camera=CAMERA, output_frame_indices=[i],
-                                n_output_frames=len(frames), fps=24))
+                                heldout={CAMERA: view}, fixed_view_camera=CAMERA, output_frame_indices=[i]))
     return out
 
 

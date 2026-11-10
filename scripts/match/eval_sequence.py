@@ -29,23 +29,23 @@ from match.sequence_eval import metrics as seq_metrics
 from match.sequence_eval import outputs as seq_outputs
 from match.sequence_eval import panels as seq_panels
 from match.sequence_eval import plots as seq_plots
-from match.sequence_eval.context import build_frame_context
-from match.sequence_eval.frames import (FrameLoadError, HeldOutCameraError, SequenceFrames,  # noqa: F401 (re-exported)
-                                        check_heldout_cameras, closest_to_frontal, frame_ids, single_capture)
+from match.sequence_eval.context import SequencePlan, build_frame_context
+from match.sequence_eval.frames import (FrameLoadError, SequenceFrames, check_heldout_cameras, closest_to_frontal,
+                                        frame_ids, single_capture)
 from match.utils import data_util
 
 
-def build_panels(fixed_view_camera, opt):
+def build_panels(plan, opt) -> list[seq_panels.Panel]:
     """The grid's panels, in layout order (row-major)."""
     return [
-        seq_panels.PredictionPanel(fixed_view_camera),
-        seq_panels.RealPanel(fixed_view_camera),
-        seq_panels.TempehMeshPanel(fixed_view_camera, opt.template_mesh_path),
-        seq_panels.OrbitPanel(),  # orbit_frames from the config
+        seq_panels.PredictionPanel(plan.fixed_view_camera),
+        seq_panels.RealPanel(plan.fixed_view_camera),
+        seq_panels.TempehMeshPanel(plan.fixed_view_camera, opt.template_mesh_path),
+        seq_panels.OrbitPanel(plan.n_output_frames),  # loops from the config
     ]
 
 
-def build_metric_collectors():
+def build_metric_collectors() -> list[seq_metrics.MetricCollector]:
     # RAFT for the temporal metrics runs on the CPU (~2.5 s per pair): the model still holds the GPU.
     return [seq_metrics.ImageMetrics(), seq_metrics.TemporalMetrics(device='cpu')]
 
@@ -62,11 +62,12 @@ def load_sequence(opt, heldout_camera_ids):
     return SequenceFrames(capture, heldout_camera_ids)
 
 
-def run_frames(runner, sequence, schedule, fps, fixed_view_camera, panels, collectors, video, preview):
+def run_frames(runner, plan, panels, collectors, video, preview):
     """Forward pass per source frame, then metrics and grid frames for it. Returns the input camera IDs per frame.
 
     The preview gets the first grid frame of every source frame, so it shows each source frame exactly once.
     """
+    sequence = plan.sequence
     num_workers = runner.opt.val_loader_params[0]['kwargs']['dataloader_kwargs'].get('num_workers', 0)
     loader = torch.utils.data.DataLoader(sequence, batch_size=1, shuffle=False, num_workers=num_workers)
     model = runner.get_unwrapped_model()
@@ -81,10 +82,7 @@ def run_frames(runner, sequence, schedule, fps, fixed_view_camera, panels, colle
             input_cameras[frame] = [str(c) for c in batch['camera'][0].tolist()]
 
             gaussians = model.mask_gaussians(runner.model(batch, func_name='forward_gaussians'))
-            ctx = build_frame_context(
-                runner, batch, gaussians, sequence.heldout_camera_ids, fixed_view_camera, frame_index=i,
-                output_frame_indices=[k for k, s in enumerate(schedule) if s == i],
-                n_output_frames=len(schedule), fps=fps)
+            ctx = build_frame_context(runner, batch, gaussians, plan, frame_index=i)
             for collector in collectors:
                 collector.add_frame(ctx)
             for k, grid in seq_panels.render_grid_frames(panels, ctx):
@@ -111,9 +109,9 @@ def eval_sequence(opt: Options, out_dir: str = None, heldout_camera_ids: list = 
         raise ValueError('eval_sequence.out_dir and eval_sequence.heldout_camera_ids must be set in the config')
     heldout_camera_ids = [str(c) for c in heldout_camera_ids]
     sequence = load_sequence(opt, heldout_camera_ids)  # fails before anything is loaded or written
-    schedule = seq_outputs.output_frame_schedule(sequence.frame_ids, fps, capture_fps)
     capture = sequence.capture
-    fixed_view_camera = closest_to_frontal(capture, heldout_camera_ids)
+    plan = SequencePlan(sequence, schedule=seq_outputs.output_frame_schedule(sequence.frame_ids, fps, capture_fps),
+                        fixed_view_camera=closest_to_frontal(capture, heldout_camera_ids))
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -125,13 +123,12 @@ def eval_sequence(opt: Options, out_dir: str = None, heldout_camera_ids: list = 
     runner.accelerate_prepare()
     runner.eval()
 
-    panels = build_panels(fixed_view_camera, opt)
+    panels = build_panels(plan, opt)
     collectors = build_metric_collectors()
-    video = seq_outputs.GridVideoWriter(out_dir, n_frames=len(schedule), fps=fps)
+    video = seq_outputs.GridVideoWriter(out_dir, n_frames=plan.n_output_frames, fps=fps)
     preview = seq_outputs.GridVideoWriter(out_dir, n_frames=len(sequence), fps=preview_fps,
                                           name=seq_outputs.PREVIEW_VIDEO)
-    input_cameras = run_frames(runner, sequence, schedule, fps, fixed_view_camera, panels, collectors, video,
-                               preview)
+    input_cameras = run_frames(runner, plan, panels, collectors, video, preview)
 
     metrics = {
         'model': {'path': opt.load_pretrained_model, 'checkpoint': runner.pretrained_model_iter},
@@ -139,11 +136,11 @@ def eval_sequence(opt: Options, out_dir: str = None, heldout_camera_ids: list = 
         'segments': sorted(set(capture.framelist.seg_id.tolist())),
         'frames': sequence.frame_ids,
         'heldout_cameras': heldout_camera_ids,
-        'fixed_view_camera': fixed_view_camera,
+        'fixed_view_camera': plan.fixed_view_camera,
         'input_cameras': input_cameras,
         'video': {'file': seq_outputs.GRID_VIDEO, 'fps': fps, 'capture_fps': capture_fps,
-                  'n_frames': len(schedule), 'panels': [p.label for p in panels]},
-        'output_frames': [sequence.frame_ids[s] for s in schedule],
+                  'n_frames': plan.n_output_frames, 'panels': [p.label for p in panels]},
+        'output_frames': [sequence.frame_ids[s] for s in plan.schedule],
         'preview': {'file': seq_outputs.PREVIEW_VIDEO, 'fps': preview_fps, 'n_frames': len(sequence),
                     'output_frames': list(sequence.frame_ids)},
     }
