@@ -6,13 +6,17 @@ implement `image`; panels that change within a source frame's hold (e.g. an orbi
 `render` directly. To add a panel, write a class here and add it to `build_panels` in
 scripts/match/eval_sequence.py. The layout code doesn't change.
 """
+import atexit
 import math
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
 
 import gin
 import numpy as np
 import torch
 from PIL import Image, ImageDraw, ImageFont
 
+from match.utils import mesh_util
 from match.utils.camera_sweep_util import (SWEEP_FOCAL_SCALE, SWEEP_HORIZ_RANGE_DEG, SWEEP_VERT_RANGE_DEG,
                                            generate_camera_sweep_extrinsics, sweep_intrinsics)
 
@@ -57,6 +61,49 @@ class RealPanel(StaticPanel):
 
     def image(self, ctx):
         return ctx.fixed_view.real_on_background(1.0)
+
+
+def _render_grey_mesh(verts, faces, W2C, K, height, width, color):
+    """pyrender of one mesh on white. Runs in TempehMeshPanel's worker process. Returns (H,W,3) float32 in [0,1]."""
+    from match.utils import render_util
+    return render_util.render_mesh(
+        vertices=verts[None], faces=faces, camera_extrinsics=W2C[None], camera_intrinsics=K[None],
+        image_size=(height, width), vertex_colors=np.full((1, len(verts), 3), color, dtype=np.float32),
+        background_color=np.ones(3, dtype=np.float32))[0]
+
+
+class TempehMeshPanel(StaticPanel):
+    """The bare TEMPEH coarse mesh MATCH got as input, plainly shaded, from the fixed viewpoint.
+
+    Rendered with the held-out camera's real calibration at the panel size, so it lines up with the
+    prediction and real panels. Shows whether jitter in the prediction is inherited from the mesh.
+
+    pyrender runs in a separate spawned process: in the MATCH process, after the first forward pass,
+    its software GL (Mesa llvmpipe) spins for minutes compiling shaders (killed after 6), while a fresh
+    process renders a frame in about a second.
+    """
+    color = (0.45, 0.45, 0.45)  # mid grey; the renderer's 4 directional lights brighten it
+
+    def __init__(self, camera_id, mesh_path):
+        """mesh_path: OBJ of the coarse-mesh topology (Options.template_mesh_path), drawn with all its faces."""
+        self.label = f'TEMPEH coarse mesh (cam {camera_id})'
+        self.faces = mesh_util.load_obj(mesh_path)['vi'].astype(np.int32)
+        self._worker = None
+
+    def image(self, ctx):
+        view = ctx.fixed_view
+        h, w = ctx.height, ctx.width
+        verts = ctx.batch['coarse_verts'][0].detach().float().cpu().numpy()  # (V,3), dataset coordinates
+        if verts.size == 0:
+            raise ValueError(f'Frame {ctx.frame_id} has no TEMPEH coarse mesh (coarse_verts is empty)')
+        W2C = torch.linalg.inv(view.C2W.detach().float().cpu())[:3, :4].numpy()
+        fx, fy, cx, cy = view.fxfycxcy.detach().float().cpu().tolist()  # normalised by the panel's W,H
+        K = np.array([[fx * w, 0, cx * w], [0, fy * h, cy * h]], dtype=np.float32)
+        if self._worker is None:
+            self._worker = ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context('spawn'))
+            atexit.register(self._worker.shutdown)
+        rendered = self._worker.submit(_render_grey_mesh, verts, self.faces, W2C, K, h, w, self.color).result()
+        return torch.from_numpy(rendered).permute(2, 0, 1)
 
 
 @gin.configurable
