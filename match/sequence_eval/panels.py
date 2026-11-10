@@ -79,8 +79,8 @@ class TempehMeshPanel(StaticPanel):
     prediction and real panels. Shows whether jitter in the prediction is inherited from the mesh.
 
     pyrender runs in a separate spawned process: in the MATCH process, after the first forward pass,
-    its software GL (Mesa llvmpipe) spins forever compiling shaders, while a fresh process renders a
-    frame in about a second.
+    its software GL (Mesa llvmpipe) spins for minutes compiling shaders (killed after 6), while a fresh
+    process renders a frame in about a second.
     """
     color = (0.45, 0.45, 0.45)  # mid grey; the renderer's 4 directional lights brighten it
 
