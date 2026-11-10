@@ -58,3 +58,20 @@ def test_pixels_outside_mask_do_not_change_score(metric, which):
     real = torch.where(mask, real, scribble)
 
   assert metric(pred, real, mask) == pytest.approx(baseline, rel=1e-6, abs=1e-7)
+
+
+# Direction of improvement for each metric: +1 higher is better, -1 lower is better.
+HIGHER_IS_BETTER = {'masked_psnr': 1, 'masked_ssim': 1, 'masked_lpips': -1}
+
+
+@pytest.mark.parametrize('metric', METRICS, ids=lambda f: f.__name__)
+def test_corrupting_pixels_inside_mask_worsens_score(metric):
+  mask = make_mask()
+  real = make_image(1)
+  g = torch.Generator().manual_seed(3)
+  mild = (real + 0.02 * torch.randn(real.shape, generator=g)).clamp(0, 1)
+  corrupted = mild.clone()
+  corrupted[:, 24:40, 24:40] = make_image(2)[:, 24:40, 24:40]  # inside the mask
+
+  sign = HIGHER_IS_BETTER[metric.__name__]
+  assert sign * metric(corrupted, real, mask) < sign * metric(mild, real, mask)
