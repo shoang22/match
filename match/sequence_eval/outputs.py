@@ -11,6 +11,7 @@ from PIL import Image
 from match.utils.camera_sweep_util import frames_to_video
 
 GRID_VIDEO = 'grid.mp4'
+PREVIEW_VIDEO = 'preview.mp4'  # the grid with each source frame shown once, at the preview fps
 METRICS_JSON = 'metrics.json'
 
 
