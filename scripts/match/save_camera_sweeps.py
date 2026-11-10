@@ -18,106 +18,16 @@ import pudb
 import tensorflow as tf
 import torch
 import tqdm
-import ffmpeg
 from match.utils import data_util, file_util, general_util
 from match.options import Options
 from match import models, data
 from match.utils import general_util, render_util, file_util, gin_util, data_util, geo_util
-import copy
+from match.utils.camera_sweep_util import frames_to_video, generate_camera_sweep_extrinsics, sweep_intrinsics
 from pyvirtualdisplay import Display
 from PIL import Image
 from match.runner import MatchRunner
 import json
-import math
-from copy import deepcopy
 from torchvision.utils import make_grid, save_image
-import shutil
-
-
-def ellipse(xmin, xmax, ymin, ymax, sigma):
-    """
-    Returns a point (x, y) on the edge of an ellipse specified by
-    x_range = (xmin, xmax)
-    y_range = (ymin, ymax)
-    sigma in [0, 1], where 0 and 1 correspond to the same position.
-    """
-
-    # Ellipse center
-    xc = (xmin + xmax) / 2.0
-    yc = (ymin + ymax) / 2.0
-
-    # Radii
-    a = (xmax - xmin) / 2.0
-    b = (ymax - ymin) / 2.0
-
-    # Angle from sigma
-    theta = 2 * np.pi * sigma
-
-    # Edge point
-    x = xc + a * np.cos(theta)
-    y = yc + b * np.sin(theta)
-
-    return x, y
-
-
-def generate_camera_sweep_extrinsics(
-    vert_range_deg=(-10, 10),   # (min, max) vertical tilt (x-axis rotation)
-    horiz_range_deg=(-30, 30), # (min, max) horizontal pan (y-axis rotation)
-    expand_periods = 0.5,
-    reduce_periods = 0.5,
-    full_periods = 1,
-    num_steps=20,
-    radius = 1.,
-    center = [0., 0., 0.],
-    up = [0., -1., 0.],
-    
-):
-    """
-    Produce a set of extrinsics for a camera sweep around the reference view.
-    Returns tensor of shape (N, 4, 4).
-    """
-    all_periods = expand_periods + full_periods + reduce_periods 
-    steps_per_period = num_steps / all_periods
-    expand_steps = round(steps_per_period*expand_periods)
-    full_steps = round(steps_per_period*full_periods)
-    reduce_steps = num_steps - expand_steps - full_steps
-    center = np.array(center)
-    up = np.array(up)
-    
-    radius_ratios = np.concatenate([
-        np.sin(np.linspace(0, np.pi/2, expand_steps)),
-        np.ones((full_steps)),
-        np.cos(np.linspace(0, np.pi/2, reduce_steps))])
-    
-    t = np.linspace(0, all_periods, num_steps)
-    angles_h, angles_v = ellipse(xmin=math.radians(horiz_range_deg[0])*radius_ratios,
-                                 xmax=math.radians(horiz_range_deg[1])*radius_ratios,
-                                 ymin=math.radians(vert_range_deg[0])*radius_ratios,
-                                 ymax=math.radians(vert_range_deg[1])*radius_ratios,
-                                 sigma=t,
-                                 )
-    
-    # camera locations 
-    y_cam = -radius * np.sin(angles_v)
-    rc = -radius * np.cos(angles_v)
-    x_cam = rc * np.sin(angles_h)
-    z_cam = rc * np.cos(angles_h)
-    cam_pos = np.stack([x_cam, y_cam, z_cam], axis=-1)  # (N, 3)
-
-    # camera rotations:
-    ax_z_cam = center[None] - cam_pos
-    ax_x_cam = np.cross(ax_z_cam, up[None])
-    ax_y_cam = np.cross(ax_z_cam, ax_x_cam)
-    ax_x_cam /= np.linalg.norm(ax_x_cam, axis=-1, keepdims=True)
-    ax_y_cam /= np.linalg.norm(ax_y_cam, axis=-1, keepdims=True)
-    ax_z_cam /= np.linalg.norm(ax_z_cam, axis=-1, keepdims=True)
-
-    C2W = np.repeat(np.eye(4)[None], num_steps, axis=0)
-    C2W[:, :3, 0] = ax_x_cam
-    C2W[:, :3, 1] = ax_y_cam
-    C2W[:, :3, 2] = ax_z_cam
-    C2W[:, :3, 3] = cam_pos
-    return C2W
 
 
 
@@ -177,9 +87,7 @@ def save_camera_sweeps(runner: MatchRunner, out_dir: str = None, nframes: int=20
           masked_gaussian_parameters['xyz'] -= masked_gaussian_parameters['xyz'].mean(dim=-2, keepdim=True)
 
           # get camera parameters:
-          cam_sweep_batch =  batch.resize([1280, 1024])
-          cam_sweep_batch = copy.deepcopy(cam_sweep_batch)
-          fxfycxcy_sweep = torch.tensor([cam_sweep_batch['fxfycxcy'][0,0,0].cpu().item() * 0.75, cam_sweep_batch['fxfycxcy'][0,0,1].cpu().item() * 0.75, 0.5, 0.5]).float().cuda()
+          fxfycxcy_sweep = sweep_intrinsics(batch['fxfycxcy'])
           C2W_sweep = generate_camera_sweep_extrinsics(
             vert_range_deg=angle_range_vert,   # (min, max) vertical tilt (x-axis rotation)
             horiz_range_deg=angle_range_hor, # (min, max) horizontal pan (y-axis rotation)
@@ -220,14 +128,7 @@ def save_camera_sweeps(runner: MatchRunner, out_dir: str = None, nframes: int=20
             sweep_frames_dir = out_dir / f'{sample_counter+i_b:06d}_sweep_frames'
             sweep_path = out_dir / f'{sample_counter+i_b:06d}_sweep.mp4'
             sweep_path.parent.mkdir(parents=True, exist_ok=True)
-            (
-              ffmpeg
-              .input(f'{sweep_frames_dir}/*.jpg', pattern_type='glob', framerate=fps)
-              .output(f'{sweep_path}')
-              .overwrite_output()
-              .run()
-            )
-            shutil.rmtree(sweep_frames_dir)
+            frames_to_video(sweep_frames_dir, sweep_path, fps=fps)
           sample_counter += B  
 
 
