@@ -7,9 +7,11 @@ GPU, the pretrained model and the data; run command in the config's header):
     --nnodes=1 --nproc-per-node=1 scripts/match/eval_sequence.py --gin_configs configs/match/eval_sequence_smoketest.gin
 Then, from the repo root:
   conda run -n match python -m pytest tests/test_eval_sequence_smoketest.py
+To check a run written elsewhere (e.g. with --gin_bindings "OUT_DIR = '<dir>'"), set EVAL_SEQUENCE_SMOKE_DIR=<dir>.
 """
 import json
 import math
+import os
 from pathlib import Path
 
 import ffmpeg
@@ -17,7 +19,7 @@ import numpy as np
 import pytest
 
 SMOKE_CONFIG = Path('configs/match/eval_sequence_smoketest.gin')
-OUT_DIR = Path('experiments/match/eval_sequence/smoketest')
+OUT_DIR = Path(os.environ.get('EVAL_SEQUENCE_SMOKE_DIR', 'experiments/match/eval_sequence/smoketest'))
 FRAMES = ['32885', '32897', '32909']  # first 3 frames of SEN_a_good_morrow_to_you_my_boy, 0.4 s apart
 HELDOUT_CAMERA = '402040'
 INPUT_CAMERA_IDS = ['401875', '401919', '402020', '402012', '401920', '401965',
@@ -110,4 +112,4 @@ def test_pretrained_model_with_the_12_standard_inputs_on_every_frame(metrics):
 
 def test_gin_configs_are_copied():
     assert (OUT_DIR / 'config_0.gin').read_text() == SMOKE_CONFIG.read_text()
-    assert "OUT_DIR = 'experiments/match/eval_sequence/smoketest'" in (OUT_DIR / 'config_all.gin').read_text()
+    assert f"OUT_DIR = '{OUT_DIR}'" in (OUT_DIR / 'config_all.gin').read_text()
