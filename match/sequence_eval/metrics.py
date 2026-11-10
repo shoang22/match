@@ -7,6 +7,8 @@ scripts/match/eval_sequence.py.
 """
 import math
 
+import torch
+
 from match.utils import metric_util
 
 # For each image metric: the function and whether higher is better.
@@ -16,6 +18,9 @@ IMAGE_METRICS = {
     'lpips': (metric_util.masked_lpips, False),
 }
 N_WORST_FRAMES = 3
+# Temporal scores (lower is better) and the fixed-view sequences they are computed on.
+TEMPORAL_SCORES = ('raw_flicker', 'flow_aligned_error')
+TEMPORAL_SOURCES = ('prediction', 'real')
 
 
 class MetricCollector:
@@ -62,3 +67,67 @@ class ImageMetrics(MetricCollector):
                 for name, (_, higher_is_better) in IMAGE_METRICS.items()
             }
         return {'per_frame': self.per_frame, 'summary': summary}
+
+
+class TemporalMetrics(MetricCollector):
+    """Frame-to-frame change at the fixed novel viewpoint, for the MATCH prediction and the real footage.
+
+    Both sequences use the real foreground masks. Optical flow is estimated once with RAFT on the real
+    frames and reused for the prediction, so both are aligned with the same motion. Frames are kept on
+    the CPU until finish(), where RAFT runs on `device`.
+
+    JSON section 'temporal':
+      'camera': the fixed-view camera ID
+      'per_pair': {frame_id: {'previous_frame': frame_id,
+                              'prediction': {'raw_flicker', 'flow_aligned_error'},
+                              'real': {'raw_flicker', 'flow_aligned_error'}}}
+        keyed by the later frame of each consecutive pair of source frames
+      'summary': {'prediction'|'real': {score: {'mean', 'worst_frames'}}}, worst_frames keyed like per_pair,
+        highest change first
+    """
+
+    def __init__(self, raft_size='large', raft_batch_size=8, device='cpu'):
+        self.raft_size = raft_size
+        self.raft_batch_size = raft_batch_size
+        self.device = device
+        self.fixed_view_camera = None
+        self.frame_ids, self.pred, self.real, self.mask = [], [], [], []
+
+    def add_frame(self, ctx):
+        view = ctx.fixed_view
+        self.fixed_view_camera = ctx.fixed_view_camera
+        self.frame_ids.append(ctx.frame_id)
+        self.pred.append(view.pred.detach().float().cpu())
+        self.real.append(view.real.detach().float().cpu())
+        self.mask.append(view.mask.detach().float().cpu())
+
+    def _per_pair_scores(self):
+        """{source: {score: [value per consecutive pair]}}."""
+        pred, real, mask = (torch.stack(x).to(self.device) for x in (self.pred, self.real, self.mask))
+        flow = metric_util.raft_flow(real, self.raft_size, self.raft_batch_size)
+        frames = {'prediction': pred, 'real': real}
+        return {
+            source: {
+                'raw_flicker': metric_util.raw_flicker(frames[source], mask).per_pair,
+                'flow_aligned_error': metric_util.flow_aligned_error(frames[source], mask, flow=flow).per_pair,
+            }
+            for source in TEMPORAL_SOURCES
+        }
+
+    def finish(self):
+        pair_frames = self.frame_ids[1:]
+        if pair_frames:
+            scores = self._per_pair_scores()
+        else:
+            scores = {source: {name: [] for name in TEMPORAL_SCORES} for source in TEMPORAL_SOURCES}
+        per_pair = {}
+        for t, (previous, frame) in enumerate(zip(self.frame_ids, pair_frames)):
+            per_pair[frame] = {'previous_frame': previous}
+            for source, by_score in scores.items():
+                per_pair[frame][source] = {name: values[t] for name, values in by_score.items()}
+        summary = {
+            source: {name: summarize(dict(zip(pair_frames, values)), higher_is_better=False)
+                     for name, values in by_score.items()}
+            for source, by_score in scores.items()
+        }
+        return {'temporal': {'camera': self.fixed_view_camera, 'per_pair': per_pair, 'summary': summary}}
