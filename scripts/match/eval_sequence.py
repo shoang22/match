@@ -43,7 +43,8 @@ def build_panels(fixed_view_camera):
 
 
 def build_metric_collectors():
-    return [seq_metrics.ImageMetrics()]
+    # RAFT for the temporal metrics runs on the CPU (~2.5 s per pair): the model still holds the GPU.
+    return [seq_metrics.ImageMetrics(), seq_metrics.TemporalMetrics(device='cpu')]
 
 
 def load_sequence(opt, heldout_camera_ids):
