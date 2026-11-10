@@ -33,11 +33,12 @@ from match.sequence_eval.frames import (FrameLoadError, HeldOutCameraError, Sequ
 from match.utils import data_util
 
 
-def build_panels(fixed_view_camera):
+def build_panels(fixed_view_camera, opt):
     """The grid's panels, in layout order (row-major)."""
     return [
         seq_panels.PredictionPanel(fixed_view_camera),
         seq_panels.RealPanel(fixed_view_camera),
+        seq_panels.TempehMeshPanel(fixed_view_camera, opt.template_mesh_path),
     ]
 
 
@@ -113,7 +114,7 @@ def eval_sequence(opt: Options, out_dir: str = None, heldout_camera_ids: list = 
     runner.accelerate_prepare()
     runner.eval()
 
-    panels = build_panels(fixed_view_camera)
+    panels = build_panels(fixed_view_camera, opt)
     collectors = build_metric_collectors()
     video = seq_outputs.GridVideoWriter(out_dir, n_frames=len(schedule), fps=fps)
     input_cameras = run_frames(runner, sequence, schedule, fps, fixed_view_camera, panels, collectors, video)

@@ -1,4 +1,4 @@
-"""Outputs of the sequence-evaluation smoke run (#8).
+"""Outputs of the sequence-evaluation smoke run (#8, #9).
 
 Checks the experiment folder written by the smoke config: the grid video's timing, size, panels and
 holds, the metrics JSON, and the config copies. Skipped until the smoke run has been done (it needs the
@@ -28,7 +28,11 @@ FPS = 24
 # 3 source frames x 0.4 s = 1.2 s = 28.8 output frames at 24 fps, rounded to whole frames.
 N_OUTPUT_FRAMES = 29
 PANEL_W, PANEL_H, LABEL_H = 512, 640, 32
-VIDEO_W, VIDEO_H = 2 * PANEL_W, LABEL_H + PANEL_H  # prediction and real panel side by side
+PANELS = [f'MATCH prediction (cam {HELDOUT_CAMERA})', f'Real held-out (cam {HELDOUT_CAMERA})',
+          f'TEMPEH coarse mesh (cam {HELDOUT_CAMERA})']
+PREDICTION, REAL, TEMPEH_MESH = range(3)
+GRID_COLS = 2  # 3-4 panels in a 2x2 grid, row-major
+VIDEO_W, VIDEO_H = GRID_COLS * PANEL_W, 2 * (LABEL_H + PANEL_H)
 
 pytestmark = pytest.mark.skipif(
     not (OUT_DIR / 'metrics.json').exists(),
@@ -47,6 +51,17 @@ def video_frames():
               .output('pipe:', format='rawvideo', pix_fmt='rgb24')
               .run(capture_stdout=True, quiet=True))
     return np.frombuffer(out, np.uint8).reshape(-1, VIDEO_H, VIDEO_W, 3).astype(np.float32)
+
+
+def panel(video_frames, p):
+    """(N, LABEL_H + PANEL_H, PANEL_W, 3) slice of panel p, label band included."""
+    r, c = divmod(p, GRID_COLS)
+    return video_frames[:, r * (LABEL_H + PANEL_H):(r + 1) * (LABEL_H + PANEL_H), c * PANEL_W:(c + 1) * PANEL_W]
+
+
+def silhouette(image):
+    """Foreground of a panel image on a white background."""
+    return image.min(axis=-1) < 200
 
 
 def test_grid_video_is_24_fps_with_the_true_duration_and_size():
@@ -69,19 +84,34 @@ def test_every_output_frame_records_its_source_frame(metrics):
 
 
 def test_panels_are_labelled_and_hold_still_between_source_frames(metrics, video_frames):
-    assert metrics['video']['panels'] == [f'MATCH prediction (cam {HELDOUT_CAMERA})', f'Real held-out (cam {HELDOUT_CAMERA})']
+    assert metrics['video']['panels'] == PANELS
     assert len(video_frames) == N_OUTPUT_FRAMES
     source = metrics['output_frames']
-    for p in range(2):
-        panel = video_frames[:, :, p * PANEL_W:(p + 1) * PANEL_W]
-        label_band = panel[:, :LABEL_H]
+    for p in range(len(PANELS)):
+        tile = panel(video_frames, p)
+        label_band = tile[:, :LABEL_H]
         assert label_band.max() > 200, f'panel {p} has no label text'
-        change = np.abs(np.diff(panel[:, LABEL_H:], axis=0)).mean(axis=(1, 2, 3))  # change into frame k+1
+        change = np.abs(np.diff(tile[:, LABEL_H:], axis=0)).mean(axis=(1, 2, 3))  # change into frame k+1
         within_hold = [c for k, c in enumerate(change) if source[k + 1] == source[k]]
         at_new_frame = [c for k, c in enumerate(change) if source[k + 1] != source[k]]
         # Held frames are repeats (codec noise only), never blends; both panels switch at the same output frames.
         assert max(within_hold) < 0.5, (p, max(within_hold))
         assert min(at_new_frame) > 2 * max(within_hold), (p, at_new_frame, max(within_hold))
+
+
+def test_tempeh_mesh_lines_up_with_the_head_in_the_prediction_and_real_panels(metrics, video_frames):
+    source = metrics['output_frames']
+    first_of_each_frame = [source.index(f) for f in FRAMES]
+    for k in first_of_each_frame:
+        mesh = silhouette(panel(video_frames, TEMPEH_MESH)[k, LABEL_H:])
+        pred = silhouette(panel(video_frames, PREDICTION)[k, LABEL_H:])
+        real = silhouette(panel(video_frames, REAL)[k, LABEL_H:])
+        assert 0.05 < mesh.mean() < 0.8, f'output frame {k}: mesh covers {mesh.mean():.2f} of the panel'
+        # The coarse mesh has no hair or shoulders, so it sits inside the head rather than matching its outline.
+        # Aligned, 99.7% of it lies on the head; shifting it by 20 px drops that to ~97%.
+        for name, head in [('prediction', pred), ('real', real)]:
+            inside = (mesh & head).sum() / mesh.sum()
+            assert inside > 0.98, f'output frame {k}: {inside:.3f} of the mesh lies on the {name} head'
 
 
 def test_metrics_are_finite_for_every_frame_and_heldout_camera(metrics):
