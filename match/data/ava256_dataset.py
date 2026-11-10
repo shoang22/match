@@ -78,13 +78,15 @@ class AvaSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
 
     Args:
         capture: The unique identifier of this mugsy capture
+        segment: if given, restrict the frame list to this segment (seg_id in frame_list.csv), before frame_stride
     """
 
     SCALE_FACTOR = np.array(1./1000, dtype=np.float32)  # converting geometry from mm to m
     SCENE_CENTER = np.array([-0.0604,  0.0295,  0.9933], dtype=np.float32)
 
 
-    def __init__(self, sapiens_segmentation_directory:str ='', **kwargs):
+    def __init__(self, sapiens_segmentation_directory:str ='', segment: Optional[str] = None, **kwargs):
+        self.segment = segment  # set before super().__init__, which calls load_metadata
         super().__init__(**kwargs)        
         self.ava_original2cleaned_vert_mapping = np.load(f'{asset_dir}/ava256/original_2_cleaned_vertmapping.npy')
         self.sapiens_segmentation_directory = sapiens_segmentation_directory
@@ -155,7 +157,7 @@ class AvaSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
         return framelist
     
     def load_metadata(self):
-        self.framelist = self.get_framelist(dataset_dir = self.dir, nframes=self.nframes, frame_stride=self.frame_stride, skip_sequences=self.skip_sequences)
+        self.framelist = self.get_framelist(dataset_dir = self.dir, nframes=self.nframes, frame_stride=self.frame_stride, skip_sequences=self.skip_sequences, segment=self.segment)
         self.full_framelist = self.get_framelist(dataset_dir = self.dir)
         self.krt_dict = self.load_camera_calibration()
 
