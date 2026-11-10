@@ -10,6 +10,7 @@ Conventions for every image metric:
   Returns a Python float.
 """
 
+import functools
 import math
 
 import torch
@@ -45,3 +46,70 @@ def masked_psnr(pred: torch.Tensor, real: torch.Tensor, mask: torch.Tensor) -> f
   if mse == 0:
     return math.inf
   return -10.0 * math.log10(mse)
+
+
+def _fill_background(pred, real, mask, background: float):
+  """Paint the same colour over the background of both images."""
+  fill = torch.full_like(pred, background)
+  return torch.where(mask, pred, fill), torch.where(mask, real, fill)
+
+
+def _gaussian_window(size: int, sigma: float, channels: int) -> torch.Tensor:
+  coords = torch.arange(size, dtype=torch.float32) - (size - 1) / 2
+  g = torch.exp(-coords ** 2 / (2 * sigma ** 2))
+  g = g / g.sum()
+  window = g[:, None] * g[None, :]
+  return window.expand(channels, 1, size, size).contiguous()
+
+
+def masked_ssim(pred: torch.Tensor, real: torch.Tensor, mask: torch.Tensor,
+                background: float = 0.0) -> float:
+  """SSIM averaged over the foreground pixels.
+
+  Both images get `background` painted over the background, then the standard
+  SSIM map (11x11 Gaussian window, sigma 1.5, peak 1, reflect padding so the map
+  matches the image size) is averaged over the mask. Windows near the mask edge
+  see the shared fill colour, which is identical in both images.
+  """
+  pred, real, mask = _prepare(pred, real, mask)
+  pred, real = _fill_background(pred, real, mask, background)
+  c = pred.shape[1]
+  size, sigma = 11, 1.5
+  window = _gaussian_window(size, sigma, c).to(pred.device)
+
+  def blur(x):
+    x = torch.nn.functional.pad(x, [size // 2] * 4, mode='reflect')
+    return torch.nn.functional.conv2d(x, window, groups=c)
+
+  c1, c2 = 0.01 ** 2, 0.03 ** 2
+  mu_p, mu_r = blur(pred), blur(real)
+  var_p = blur(pred * pred) - mu_p ** 2
+  var_r = blur(real * real) - mu_r ** 2
+  cov = blur(pred * real) - mu_p * mu_r
+  ssim_map = ((2 * mu_p * mu_r + c1) * (2 * cov + c2)) / (
+      (mu_p ** 2 + mu_r ** 2 + c1) * (var_p + var_r + c2))
+  return ssim_map[mask.expand_as(ssim_map)].mean().item()
+
+
+@functools.lru_cache(maxsize=None)
+def _lpips_model(net: str):
+  import lpips  # pylint: disable=g-import-not-at-top
+  return lpips.LPIPS(net=net, spatial=True, verbose=False).eval().requires_grad_(False)
+
+
+def masked_lpips(pred: torch.Tensor, real: torch.Tensor, mask: torch.Tensor,
+                 background: float = 0.0, net: str = 'vgg') -> float:
+  """LPIPS averaged over the foreground pixels (lower is better, 0 = identical).
+
+  Both images get `background` painted over the background, then the spatial
+  LPIPS map is averaged over the mask. `net='vgg'` matches the runner's training
+  loss (`MatchRunner.init_lpips`). The torchvision backbone weights are
+  downloaded on first use if not cached; the linear-layer weights ship with the
+  lpips package.
+  """
+  pred, real, mask = _prepare(pred, real, mask)
+  pred, real = _fill_background(pred, real, mask, background)
+  model = _lpips_model(net).to(pred.device)
+  with torch.no_grad():
+    lpips_map = model(pred, real, normalize=True)  # (1, 1, H, W)
+  return lpips_map[mask].mean().item()

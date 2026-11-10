@@ -2,6 +2,7 @@
 
 import math
 
+import pytest
 import torch
 
 from match.utils import metric_util
@@ -28,3 +29,13 @@ def make_mask() -> torch.Tensor:
 def test_identical_images_give_infinite_psnr():
   img = make_image(0)
   assert metric_util.masked_psnr(img, img.clone(), make_mask()) == math.inf
+
+
+def test_identical_images_give_ssim_of_one():
+  img = make_image(0)
+  assert metric_util.masked_ssim(img, img.clone(), make_mask()) == pytest.approx(1.0, abs=1e-6)
+
+
+def test_identical_images_give_lpips_of_zero():
+  img = make_image(0)
+  assert metric_util.masked_lpips(img, img.clone(), make_mask()) == pytest.approx(0.0, abs=1e-6)
