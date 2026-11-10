@@ -32,11 +32,14 @@ class MetricCollector:
 
 
 def summarize(values_by_frame, higher_is_better, n_worst=N_WORST_FRAMES):
-    """Mean over the frames, and the n_worst frames (worst first) as [{'frame', 'value'}]."""
-    finite = [v for v in values_by_frame.values() if math.isfinite(v)]
-    worst = sorted(values_by_frame.items(), key=lambda fv: fv[1], reverse=not higher_is_better)[:n_worst]
+    """Mean over the frames, and the n_worst frames (worst first) as [{'frame', 'value'}].
+
+    Non-finite values (inf PSNR for identical images, nan for no valid pixels) are left out of both.
+    """
+    finite = {f: v for f, v in values_by_frame.items() if math.isfinite(v)}
+    worst = sorted(finite.items(), key=lambda fv: fv[1], reverse=not higher_is_better)[:n_worst]
     return {
-        'mean': sum(finite) / len(finite) if finite else math.nan,
+        'mean': sum(finite.values()) / len(finite) if finite else math.nan,
         'worst_frames': [{'frame': f, 'value': v} for f, v in worst],
     }
 
