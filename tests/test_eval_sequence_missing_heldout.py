@@ -1,48 +1,36 @@
 """The sequence evaluation run fails clearly when a held-out camera is incomplete (#8).
 
-Runs the real entry point (scripts/match/eval_sequence.py) with the smoke config on a copy of the
-TCE049 capture folder in which one held-out camera's image zip, mask zip or calibration entry is
-missing. The run must stop with an error naming the camera and the missing asset before it loads the
-model or writes anything. CPU only; skipped without data/ava-256 and assets/.
-
-Run from the repo root:
-  conda run -n match python -m pytest tests/test_eval_sequence_missing_heldout.py
+Runs the real entry point (scripts/match/eval_sequence.py) in a subprocess, so its environment and gin
+registrations stay out of the test session, with the smoke config on a copy of the TCE049 capture folder in
+which one held-out camera's image zip, mask zip or calibration entry is missing. The run must stop with an
+error naming the camera and the missing asset before it loads the model or writes anything. CPU only;
+skipped without data/ava-256 and assets/.
 """
-import importlib.util
 import json
 import os
-from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
-from match.sequence_eval.frames import HeldOutCameraError
+from tce049 import ASSETS, DECODER_DIR, FIXED_VIEW_CAMERA, REPO_ROOT
 
-SMOKE_CONFIG = Path('configs/match/eval_sequence_smoketest.gin')
-CAPTURE = '20230807--0839--TCE049'
-DECODER_DIR = Path('data/ava-256') / CAPTURE / 'decoder'
-HELDOUT_CAMERA = '402040'  # the smoke config's only held-out camera
+SMOKE_CONFIG = 'configs/match/eval_sequence_smoketest.gin'
+HELDOUT_CAMERA = FIXED_VIEW_CAMERA  # the smoke config's only held-out camera
 
 pytestmark = pytest.mark.skipif(
-    not (DECODER_DIR.is_dir() and Path('assets/pretrained_models/match/uv_res_1024').is_dir()),
+    not (DECODER_DIR.is_dir() and (ASSETS / 'pretrained_models/match/uv_res_1024').is_dir()),
     reason='needs data/ava-256 and assets/ (symlink them into a worktree)',
 )
 
 
-@pytest.fixture(scope='module')
-def eval_sequence():
-    spec = importlib.util.spec_from_file_location('eval_sequence_script', 'scripts/match/eval_sequence.py')
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def mirror_capture(root, drop=None):
+def mirror_capture(root, drop):
     """Mirrors the TCE049 decoder folder under root with symlinks, leaving out one asset.
 
     drop: 'image' or 'foreground_masks' to leave out the held-out camera's zip, 'calibration' to
     remove its entry from camera_calibration.json.
     """
-    decoder = root / 'ava-256' / CAPTURE / 'decoder'
+    decoder = root / 'ava-256' / DECODER_DIR.parent.name / 'decoder'
     decoder.mkdir(parents=True)
     for entry in DECODER_DIR.iterdir():
         target = decoder / entry.name
@@ -61,21 +49,17 @@ def mirror_capture(root, drop=None):
     return root / 'ava-256'
 
 
-def run_smoke_config(eval_sequence, tmp_path, ava_root):
-    import gin
-    out_dir = tmp_path / 'out'
+def run_smoke_config(tmp_path, ava_root, out_dir):
+    """Runs the entry point on the CPU with the smoke config, reading ava_root. Returns the finished process."""
     config = tmp_path / 'config.gin'
     config.write_text(
-        f"include '{SMOKE_CONFIG.as_posix()}'\n"
+        f"include '{SMOKE_CONFIG}'\n"
         f"AVA_ROOT = '{ava_root}'\n"
         f"eval_sequence.out_dir = '{out_dir}'\n"
     )
-    gin.clear_config()
-    try:
-        eval_sequence.main(['--gin_configs', str(config)])
-    finally:
-        gin.clear_config()
-    return out_dir
+    env = {**os.environ, 'CUDA_VISIBLE_DEVICES': '', 'PYTHONPATH': str(REPO_ROOT)}
+    return subprocess.run([sys.executable, 'scripts/match/eval_sequence.py', '--gin_configs', str(config)],
+                          cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=600)
 
 
 @pytest.mark.parametrize('drop, asset', [
@@ -83,13 +67,13 @@ def run_smoke_config(eval_sequence, tmp_path, ava_root):
     ('foreground_masks', 'mask'),
     ('calibration', 'calibration'),
 ])
-def test_missing_heldout_asset_fails_clearly_before_writing(eval_sequence, tmp_path, monkeypatch, drop, asset):
-    monkeypatch.setenv('CUDA_VISIBLE_DEVICES', '')
+def test_missing_heldout_asset_fails_clearly_before_writing(tmp_path, drop, asset):
     ava_root = mirror_capture(tmp_path, drop=drop)
+    out_dir = tmp_path / 'out'
 
-    with pytest.raises(HeldOutCameraError) as error:
-        run_smoke_config(eval_sequence, tmp_path, ava_root)
+    result = run_smoke_config(tmp_path, ava_root, out_dir)
 
-    message = str(error.value)
-    assert HELDOUT_CAMERA in message and asset in message
-    assert not (tmp_path / 'out').exists()
+    assert result.returncode != 0
+    error = result.stderr[result.stderr.rindex('HeldOutCameraError'):]
+    assert HELDOUT_CAMERA in error and asset in error, error
+    assert not out_dir.exists()
