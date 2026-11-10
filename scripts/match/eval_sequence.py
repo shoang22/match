@@ -39,11 +39,13 @@ def build_panels(fixed_view_camera, opt):
         seq_panels.PredictionPanel(fixed_view_camera),
         seq_panels.RealPanel(fixed_view_camera),
         seq_panels.TempehMeshPanel(fixed_view_camera, opt.template_mesh_path),
+        seq_panels.OrbitPanel(),  # orbit_frames from the config
     ]
 
 
 def build_metric_collectors():
-    return [seq_metrics.ImageMetrics()]
+    # RAFT for the temporal metrics runs on the CPU (~2.5 s per pair): the model still holds the GPU.
+    return [seq_metrics.ImageMetrics(), seq_metrics.TemporalMetrics(device='cpu')]
 
 
 def load_sequence(opt, heldout_camera_ids):

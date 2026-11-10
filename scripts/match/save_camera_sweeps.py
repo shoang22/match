@@ -22,7 +22,8 @@ from match.utils import data_util, file_util, general_util
 from match.options import Options
 from match import models, data
 from match.utils import general_util, render_util, file_util, gin_util, data_util, geo_util
-from match.utils.camera_sweep_util import frames_to_video, generate_camera_sweep_extrinsics, sweep_intrinsics
+from match.utils.camera_sweep_util import (SWEEP_HORIZ_RANGE_DEG, SWEEP_VERT_RANGE_DEG, frames_to_video,
+                                           generate_camera_sweep_extrinsics, sweep_intrinsics)
 from pyvirtualdisplay import Display
 from PIL import Image
 from match.runner import MatchRunner
@@ -32,7 +33,7 @@ from torchvision.utils import make_grid, save_image
 
 
 @gin.configurable()
-def save_camera_sweeps(runner: MatchRunner, out_dir: str = None, nframes: int=200, fps:int=24, angle_range_hor=[-40,40], angle_range_vert=[-15, 36], n_samples:int=-1, store_config_files: list[str] = None) -> None:
+def save_camera_sweeps(runner: MatchRunner, out_dir: str = None, nframes: int=200, fps:int=24, angle_range_hor=SWEEP_HORIZ_RANGE_DEG, angle_range_vert=SWEEP_VERT_RANGE_DEG, n_samples:int=-1, store_config_files: list[str] = None) -> None:
   """saving prediction results as camera sweeps
   """
   opt = runner.opt
