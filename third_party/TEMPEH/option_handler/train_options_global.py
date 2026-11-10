@@ -72,6 +72,7 @@ class TrainOptions(BaseTrainOptions):
         self.add_arg( cate='data', abbr='width', name='width', type=int, default=argparse.SUPPRESS)
         self.add_arg( cate='data', abbr='frame-stride', name='frame-stride', type=int, default=argparse.SUPPRESS)
         self.add_arg( cate='data', abbr='max-captures', name='max-captures', type=int, default=argparse.SUPPRESS)
+        self.add_arg( cate='data', abbr='segment', name='segment', type=str, default=argparse.SUPPRESS)  # Ava-256 seg_id; None = all segments
 
         # nersemble dataset
         self.add_arg( cate='data', abbr='nersemble-dir', name='nersemble-dataset-directory', type=str, default=argparse.SUPPRESS)
@@ -153,6 +154,7 @@ class TrainOptions(BaseTrainOptions):
             'width': None,
             'frame-stride': None,
             'max-captures': None,
+            'segment': None,
             'uv-n-samples': -1,
             'subjects': None,
             'nersemble-dataset-directory': None,
