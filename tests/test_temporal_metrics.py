@@ -65,3 +65,19 @@ def test_given_exact_flow_aligns_a_translating_sequence():
   forward = torch.tensor([-3.0, -2.0]).view(1, 2, 1, 1).expand(T - 1, 2, H, W)
   scores = metric_util.flow_aligned_error(frames, make_masks(), flow=(forward, -forward))
   assert scores.per_pair == pytest.approx([0.0] * (T - 1), abs=1e-6)
+
+
+@pytest.mark.parametrize('make_sequence', [static_sequence, translating_sequence],
+                         ids=lambda f: f.__name__)
+def test_per_frame_noise_increases_both_scores(make_sequence):
+  clean, masks = make_sequence(), make_masks()
+  g = torch.Generator().manual_seed(7)
+  noisy = (clean + 0.05 * torch.randn(clean.shape, generator=g)).clamp(0, 1)
+  # As in the evaluation run: flow from the clean footage, applied to both.
+  flow = metric_util.raft_flow(clean)
+
+  for score in (lambda x: metric_util.raw_flicker(x, masks),
+                lambda x: metric_util.flow_aligned_error(x, masks, flow=flow)):
+    before, after = score(clean), score(noisy)
+    assert all(a > b for a, b in zip(after.per_pair, before.per_pair))
+    assert after.mean > before.mean
