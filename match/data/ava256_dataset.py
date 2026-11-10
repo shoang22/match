@@ -128,15 +128,25 @@ class AvaSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
 
     @staticmethod
     def get_framelist(
-        dataset_dir: Path, nframes: int = -1, frame_stride=1, skip_sequences=[]
+        dataset_dir: Path, nframes: int = -1, frame_stride=1, skip_sequences=[], segment: Optional[str] = None
     ) -> pd.DataFrame:
         """
         Load framelist
+
+        segment: if given, keep only the frames of this segment (seg_id). Applied before frame_stride.
         """
 
         # Load frame list; ie, (segment, frame) pairs
         frame_list_path = f"{dataset_dir}/frame_list.csv"
         framelist = pd.read_csv(frame_list_path, dtype=str, sep=r",")
+        if segment is not None:
+            segment_frames = framelist[framelist['seg_id'] == segment]
+            if len(segment_frames) == 0:
+                raise ValueError(
+                    f"Segment '{segment}' is not in {frame_list_path}. "
+                    f"Available segments include: {list(framelist['seg_id'].unique()[:10])}"
+                )
+            framelist = segment_frames
         framelist = framelist.iloc[::frame_stride]
         for s in skip_sequences:
             framelist = framelist[~framelist['seg_id'].str.startswith(s)]
