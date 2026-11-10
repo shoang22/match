@@ -13,6 +13,7 @@ from match.utils.camera_sweep_util import frames_to_video
 GRID_VIDEO = 'grid.mp4'
 PREVIEW_VIDEO = 'preview.mp4'  # the grid with each source frame shown once, at the preview fps
 METRICS_JSON = 'metrics.json'
+VIDEO_PIX_FMT = 'yuv420p'  # limited-range 4:2:0, which every player decodes (ffmpeg would pick yuvj420p for JPEGs)
 
 
 def source_frame_times(frame_ids, capture_fps):
@@ -73,7 +74,7 @@ class GridVideoWriter:
         written = sorted(self.frames_dir.glob('*.jpg'))
         if len(written) != self.n_frames:
             raise RuntimeError(f'{self.video_path}: expected {self.n_frames} frames, got {len(written)} in {self.frames_dir}')
-        frames_to_video(self.frames_dir, self.video_path, fps=self.fps)
+        frames_to_video(self.frames_dir, self.video_path, fps=self.fps, pix_fmt=VIDEO_PIX_FMT)
         return self.video_path
 
 
