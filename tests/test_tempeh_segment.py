@@ -1,25 +1,24 @@
 """The TEMPEH prediction script can be limited to one Ava-256 segment (issue #3).
 
 Builds the dataset the way scripts/tempeh/save_predictions.py does (options parsed from the command line,
-then Trainer.register_dataset), without loading the model. Run from the repo root.
+then Trainer.register_dataset), without loading the model.
 """
 import sys
-from pathlib import Path
 
 import pytest
 import torch
 
-TEMPEH_CONFIG = Path('assets/pretrained_models/tempeh/config.json')
+from tce049 import ASSETS, AVA_ROOT, REPO_ROOT, SEGMENT
+
+TEMPEH_CONFIG = ASSETS / 'pretrained_models/tempeh/config.json'
 pytestmark = pytest.mark.skipif(
-    not (Path('data/ava-256').exists() and TEMPEH_CONFIG.exists()),
+    not (AVA_ROOT.exists() and TEMPEH_CONFIG.exists()),
     reason='needs data/ava-256 and the pretrained TEMPEH config (symlink data/ and assets/ into a worktree)',
 )
 
-SEGMENT = 'SEN_a_good_morrow_to_you_my_boy'
-
 
 def tempeh_full_dataset(monkeypatch, *extra_args):
-    monkeypatch.syspath_prepend('third_party/TEMPEH')
+    monkeypatch.syspath_prepend(str(REPO_ROOT / 'third_party/TEMPEH'))
     from option_handler.train_options_global import TrainOptions
     from trainer.global_trainer import Trainer
 

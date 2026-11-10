@@ -5,7 +5,7 @@ Two seams:
   segment's 40 frames with the quickstart's cameras and sizes, and write to their own folder;
 - the output folder after the run: 40 frames, each with verts.npy and one UV map per input camera.
 
-Run from the repo root (real-data tests skip without data/ and assets/):
+Real-data tests skip without data/ and assets/:
   conda run -n match python -m pytest tests/test_tempeh_sequence_predictions.py
 """
 import shlex
@@ -17,18 +17,14 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 
-CONFIG = Path('configs/tempeh/save_predictions_seq_SEN_a_good_morrow.yml')
-QUICKSTART_CONFIG = Path('configs/tempeh/save_predictions_quickstart.yml')
-TEMPEH_CONFIG = Path('assets/pretrained_models/tempeh/config.json')
-SEGMENT = 'SEN_a_good_morrow_to_you_my_boy'
-# The segment's frames in the 4TB frame list (#3): 32885 + 12k for k = 0..39.
-SEGMENT_FRAMES = [str(32885 + 12 * k) for k in range(40)]
-# The 12 input cameras confirmed by the held-out-cameras ticket (#4), in camera-angle order.
-INPUT_CAMERA_IDS = ['401875', '401919', '402020', '402012', '401920', '401965',
-                    '401630', '401916', '401860', '402038', '401966', '401969']
+from tce049 import ASSETS, AVA_ROOT, INPUT_CAMERA_IDS, REPO_ROOT, SEGMENT, SEGMENT_FRAMES
+
+CONFIG = Path('configs/tempeh/save_predictions_seq_SEN_a_good_morrow.yml')  # as named in its header
+QUICKSTART_CONFIG = REPO_ROOT / 'configs/tempeh/save_predictions_quickstart.yml'
+TEMPEH_CONFIG = ASSETS / 'pretrained_models/tempeh/config.json'
 
 needs_data = pytest.mark.skipif(
-    not (Path('data/ava-256').exists() and TEMPEH_CONFIG.exists()),
+    not (AVA_ROOT.exists() and TEMPEH_CONFIG.exists()),
     reason='needs data/ava-256 and the pretrained TEMPEH config (symlink data/ and assets/ into a worktree)',
 )
 
@@ -39,20 +35,20 @@ def load_config(path):
 
 def parse_script_args(monkeypatch, config):
     """Parses the config's arguments with the TEMPEH options parser, as the prediction script does."""
-    monkeypatch.syspath_prepend('third_party/TEMPEH')
+    monkeypatch.syspath_prepend(str(REPO_ROOT / 'third_party/TEMPEH'))
     from option_handler.train_options_global import TrainOptions
     monkeypatch.setattr(sys, 'argv', ['save_predictions.py', *shlex.split(config['arguments'])])
     return TrainOptions().parse()
 
 
 def test_header_comment_gives_the_run_command():
-    first_line = CONFIG.read_text().splitlines()[0]
+    first_line = (REPO_ROOT / CONFIG).read_text().splitlines()[0]
     assert first_line.startswith('#') and f'condor/run.py {CONFIG.as_posix()}' in first_line
 
 
 @needs_data
 def test_config_writes_to_its_own_folder(monkeypatch):
-    args = parse_script_args(monkeypatch, load_config(CONFIG))
+    args = parse_script_args(monkeypatch, load_config(REPO_ROOT / CONFIG))
     quickstart_args = parse_script_args(monkeypatch, load_config(QUICKSTART_CONFIG))
     out, quickstart_out = Path(args.outpath), Path(quickstart_args.outpath)
     assert out != quickstart_out
@@ -61,7 +57,7 @@ def test_config_writes_to_its_own_folder(monkeypatch):
 
 @needs_data
 def test_config_keeps_the_quickstart_cameras_and_sizes_with_no_sample_cap(monkeypatch):
-    args = parse_script_args(monkeypatch, load_config(CONFIG))
+    args = parse_script_args(monkeypatch, load_config(REPO_ROOT / CONFIG))
     quickstart_args = parse_script_args(monkeypatch, load_config(QUICKSTART_CONFIG))
     for name in ['camera_angles', 'height', 'width', 'uv_out_height', 'uv_out_width', 'config_filename']:
         assert getattr(args, name) == getattr(quickstart_args, name), name
@@ -70,7 +66,7 @@ def test_config_keeps_the_quickstart_cameras_and_sizes_with_no_sample_cap(monkey
 
 @needs_data
 def test_config_selects_every_frame_of_the_segment(monkeypatch):
-    args = parse_script_args(monkeypatch, load_config(CONFIG))
+    args = parse_script_args(monkeypatch, load_config(REPO_ROOT / CONFIG))
     assert args.segment == SEGMENT and args.frame_stride == 1
     from trainer.global_trainer import Trainer
     trainer = Trainer(args, torch.device('cpu'))
@@ -82,9 +78,7 @@ def test_config_selects_every_frame_of_the_segment(monkeypatch):
 
 
 def segment_output_dir():
-    if not CONFIG.exists():
-        return Path('missing-config')
-    out_dir = Path(load_config(CONFIG)['out_dir'])
+    out_dir = REPO_ROOT / load_config(REPO_ROOT / CONFIG)['out_dir']
     return out_dir / 'ava-256' / 'TCE049' / SEGMENT
 
 
@@ -101,10 +95,14 @@ def test_outputs_exist_for_every_frame_of_the_segment():
 
 
 @needs_outputs
-@pytest.mark.parametrize('frame', SEGMENT_FRAMES)
-def test_each_frame_has_coarse_mesh_and_one_uv_map_per_input_camera(frame):
-    frame_dir = segment_output_dir() / frame
-    verts = np.load(frame_dir / 'verts.npy')
-    assert verts.shape == (5741, 3) and np.isfinite(verts).all()
-    uv_cameras = sorted(p.name[len('uv_cam'):-len('.png')] for p in frame_dir.glob('uv_cam*.png'))
-    assert uv_cameras == sorted(INPUT_CAMERA_IDS)
+def test_each_frame_has_coarse_mesh_and_one_uv_map_per_input_camera():
+    problems = {}
+    for frame in SEGMENT_FRAMES:
+        frame_dir = segment_output_dir() / frame
+        verts = np.load(frame_dir / 'verts.npy')
+        uv_cameras = sorted(p.name[len('uv_cam'):-len('.png')] for p in frame_dir.glob('uv_cam*.png'))
+        if verts.shape != (5741, 3) or not np.isfinite(verts).all():
+            problems[frame] = f'verts {verts.shape}, finite: {np.isfinite(verts).all()}'
+        elif uv_cameras != sorted(INPUT_CAMERA_IDS):
+            problems[frame] = f'UV maps for cameras {uv_cameras}'
+    assert not problems, problems
