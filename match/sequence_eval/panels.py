@@ -10,12 +10,14 @@ import atexit
 import math
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
+from typing import Protocol
 
 import gin
 import numpy as np
 import torch
 from PIL import Image, ImageDraw, ImageFont
 
+from match.sequence_eval.context import FrameContext
 from match.utils import mesh_util
 from match.utils.camera_sweep_util import (SWEEP_FOCAL_SCALE, SWEEP_HORIZ_RANGE_DEG, SWEEP_VERT_RANGE_DEG,
                                            generate_camera_sweep_extrinsics, sweep_intrinsics)
@@ -24,19 +26,18 @@ LABEL_HEIGHT = 32
 LABEL_FONT_SIZE = 22
 
 
-class Panel:
-    label = ''
+class Panel(Protocol):
+    label: str  # drawn above the panel and listed in metrics.json 'video.panels'
 
-    def render(self, ctx):
+    def render(self, ctx: FrameContext) -> list:
         """Returns a list of (3,H,W) float images in [0,1], one per index in ctx.output_frame_indices."""
-        raise NotImplementedError
 
 
-class StaticPanel(Panel):
-    """A panel that shows the same image for the whole hold of a source frame."""
+class StaticPanel:
+    """Base of panels that show the same image for the whole hold of a source frame.
 
-    def image(self, ctx):
-        raise NotImplementedError
+    Subclasses set `label` and define `image(ctx)`, which returns one (3,H,W) float image in [0,1].
+    """
 
     def render(self, ctx):
         img = self.image(ctx)
@@ -107,17 +108,22 @@ class TempehMeshPanel(StaticPanel):
 
 
 @gin.configurable
-class OrbitPanel(Panel):
+class OrbitPanel:
     """A slow orbit around the head while time plays, one camera pose per grid-video frame.
 
     The path is the camera-sweep path (scripts/match/save_camera_sweeps.py) with its default angle range and
-    intrinsics, rendered on a centred copy of the frame's Gaussians. It starts and ends at the frontal pose and
-    loops every `orbit_frames` video frames. The source frame shown changes with the other panels.
+    intrinsics, rendered on a centred copy of the frame's Gaussians. It goes round `loops` whole times over the
+    grid video (once by default), starting at the frontal pose and ending one step before it, so the orbit also
+    joins up when the video plays in a loop. The source frame shown changes with the other panels.
     """
     label = 'Orbit'
 
-    def __init__(self, orbit_frames=200, vert_range_deg=SWEEP_VERT_RANGE_DEG, horiz_range_deg=SWEEP_HORIZ_RANGE_DEG,
-                 focal_scale=SWEEP_FOCAL_SCALE, render_chunk=8):
+    def __init__(self, n_video_frames, loops=1, vert_range_deg=SWEEP_VERT_RANGE_DEG,
+                 horiz_range_deg=SWEEP_HORIZ_RANGE_DEG, focal_scale=SWEEP_FOCAL_SCALE, render_chunk=8):
+        if loops < 1 or n_video_frames % loops:
+            raise ValueError(f'OrbitPanel.loops = {loops} does not split the {n_video_frames} grid-video frames '
+                             'into whole orbits')
+        orbit_frames = n_video_frames // loops
         # One extra step, dropped, so the frontal end pose isn't shown twice when the orbit loops.
         path = generate_camera_sweep_extrinsics(
             vert_range_deg=vert_range_deg, horiz_range_deg=horiz_range_deg, num_steps=orbit_frames + 1)

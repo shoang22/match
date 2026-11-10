@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from match.sequence_eval.frames import HeldOutCameraError
+
 SMOKE_CONFIG = Path('configs/match/eval_sequence_smoketest.gin')
 CAPTURE = '20230807--0839--TCE049'
 DECODER_DIR = Path('data/ava-256') / CAPTURE / 'decoder'
@@ -85,7 +87,7 @@ def test_missing_heldout_asset_fails_clearly_before_writing(eval_sequence, tmp_p
     monkeypatch.setenv('CUDA_VISIBLE_DEVICES', '')
     ava_root = mirror_capture(tmp_path, drop=drop)
 
-    with pytest.raises(eval_sequence.HeldOutCameraError) as error:
+    with pytest.raises(HeldOutCameraError) as error:
         run_smoke_config(eval_sequence, tmp_path, ava_root)
 
     message = str(error.value)
