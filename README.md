@@ -101,6 +101,18 @@ We demonstrate how a set of registered Gaussian splat textures of a person predi
 
 
 
+## Evaluating pretrained MATCH on a sequence
+`scripts/match/eval_sequence.py` runs the pretrained model on every frame of one Ava-256 segment (one forward pass per frame, the 12 standard input cameras) and renders it from held-out cameras that are never inputs. `configs/match/eval_sequence_SEN_a_good_morrow.gin` evaluates the 40 frames of TCE049's `SEN_a_good_morrow_to_you_my_boy` with 3 held-out cameras. It writes a 24 fps grid video (prediction and real image from the held-out camera closest to frontal, the TEMPEH coarse mesh and an orbit around the head), a preview with each source frame shown once, `metrics.json` (masked PSNR/SSIM/LPIPS per frame and held-out camera, plus raw flicker and flow-aligned error per frame pair), per-frame plots and copies of the configs.
+
+- Run the quickstart steps 1 to 4 first, then download the held-out cameras and infer TEMPEH meshes for every frame of the segment. The commands are in steps 1 and 2 of the config's header.
+- Smoke check (3 frames, 1 held-out camera, ~3 min). Output goes to `experiments/match/eval_sequence/smoketest`:
+    ```bash
+    PYTHONPATH=$(pwd) PYOPENGL_PLATFORM=egl torchrun --standalone --nnodes=1 --nproc-per-node=1 \
+      scripts/match/eval_sequence.py --gin_configs configs/match/eval_sequence_smoketest.gin
+    ```
+- Full run (~27 min). Use the same command with `configs/match/eval_sequence_SEN_a_good_morrow.gin`; output goes to `experiments/match/eval_sequence/SEN_a_good_morrow`. It uses the whole 24GB GPU, so nothing else may hold GPU memory. Leave `PYTORCH_CUDA_ALLOC_CONF` unset.
+- Check the outputs: `python -m pytest tests/test_eval_sequence_outputs.py tests/test_eval_sequence_smoketest.py`.
+
 ## Training TEMPEH
 - Download the entire ava-256 dataset using `condor/run.py configs/data/download_ava256_full.gin`
 - Start tempeh training by running `condor/run.py configs/tempeh/train_tempeh.yaml`
