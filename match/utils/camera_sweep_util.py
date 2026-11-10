@@ -5,6 +5,7 @@ Shared by scripts/match/save_camera_sweeps.py and the sequence evaluation run.
 import math
 
 import numpy as np
+import torch
 
 
 def ellipse(xmin, xmax, ymin, ymax, sigma):
@@ -91,3 +92,16 @@ def generate_camera_sweep_extrinsics(
     C2W[:, :3, 2] = ax_z_cam
     C2W[:, :3, 3] = cam_pos
     return C2W
+
+
+def sweep_intrinsics(fxfycxcy, focal_scale=0.75):
+    """
+    Intrinsics for the camera sweep: the focal length of the first input view
+    of the first sample, scaled by focal_scale, with the principal point at the
+    image center.
+    fxfycxcy: normalized intrinsics of shape (B, V, 4), e.g. batch['fxfycxcy'].
+    Returns a float32 tensor [fx, fy, cx, cy] of shape (4,) on the same device.
+    """
+    fx = fxfycxcy[0, 0, 0].item() * focal_scale
+    fy = fxfycxcy[0, 0, 1].item() * focal_scale
+    return torch.tensor([fx, fy, 0.5, 0.5], dtype=torch.float32, device=fxfycxcy.device)

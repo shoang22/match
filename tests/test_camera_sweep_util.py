@@ -3,6 +3,7 @@
 Run from the repo root: conda run -n match python -m pytest tests/test_camera_sweep_util.py
 """
 import numpy as np
+import torch
 
 from match.utils import camera_sweep_util
 
@@ -30,3 +31,15 @@ def test_sweep_cameras_look_at_the_origin_from_the_given_radius():
   np.testing.assert_allclose(np.linalg.norm(positions, axis=-1), 2., atol=1e-9)
   # Camera +z (viewing direction) points from the camera towards the origin.
   np.testing.assert_allclose(C2W[:, :3, 2], -positions / 2., atol=1e-9)
+
+
+def test_sweep_intrinsics_scale_the_first_input_view_focal_and_center_the_principal_point():
+  # (B=2, V=2, 4) normalized fx, fy, cx, cy. Only sample 0, view 0 is used.
+  fxfycxcy = torch.tensor([
+      [[1.2, 1.6, 0.48, 0.52], [9., 9., 9., 9.]],
+      [[7., 7., 7., 7.], [8., 8., 8., 8.]]], dtype=torch.float64)
+
+  intrinsics = camera_sweep_util.sweep_intrinsics(fxfycxcy)
+
+  assert intrinsics.dtype == torch.float32
+  torch.testing.assert_close(intrinsics, torch.tensor([0.9, 1.2, 0.5, 0.5]))
