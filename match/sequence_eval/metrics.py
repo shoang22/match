@@ -18,6 +18,9 @@ IMAGE_METRICS = {
     'lpips': (metric_util.masked_lpips, False),
 }
 N_WORST_FRAMES = 3
+# Temporal scores (lower is better) and the fixed-view sequences they are computed on.
+TEMPORAL_SCORES = ('raw_flicker', 'flow_aligned_error')
+TEMPORAL_SOURCES = ('prediction', 'real')
 
 
 class MetricCollector:
@@ -79,6 +82,8 @@ class TemporalMetrics(MetricCollector):
                               'prediction': {'raw_flicker', 'flow_aligned_error'},
                               'real': {'raw_flicker', 'flow_aligned_error'}}}
         keyed by the later frame of each consecutive pair of source frames
+      'summary': {'prediction'|'real': {score: {'mean', 'worst_frames'}}}, worst_frames keyed like per_pair,
+        highest change first
     """
 
     def __init__(self, raft_size='large', raft_batch_size=8, device='cpu'):
@@ -100,19 +105,29 @@ class TemporalMetrics(MetricCollector):
         """{source: {score: [value per consecutive pair]}}."""
         pred, real, mask = (torch.stack(x).to(self.device) for x in (self.pred, self.real, self.mask))
         flow = metric_util.raft_flow(real, self.raft_size, self.raft_batch_size)
+        frames = {'prediction': pred, 'real': real}
         return {
             source: {
-                'raw_flicker': metric_util.raw_flicker(frames, mask).per_pair,
-                'flow_aligned_error': metric_util.flow_aligned_error(frames, mask, flow=flow).per_pair,
+                'raw_flicker': metric_util.raw_flicker(frames[source], mask).per_pair,
+                'flow_aligned_error': metric_util.flow_aligned_error(frames[source], mask, flow=flow).per_pair,
             }
-            for source, frames in (('prediction', pred), ('real', real))
+            for source in TEMPORAL_SOURCES
         }
 
     def finish(self):
-        scores = self._per_pair_scores() if len(self.frame_ids) >= 2 else {}
+        pair_frames = self.frame_ids[1:]
+        if pair_frames:
+            scores = self._per_pair_scores()
+        else:
+            scores = {source: {name: [] for name in TEMPORAL_SCORES} for source in TEMPORAL_SOURCES}
         per_pair = {}
-        for t, (previous, frame) in enumerate(zip(self.frame_ids, self.frame_ids[1:])):
+        for t, (previous, frame) in enumerate(zip(self.frame_ids, pair_frames)):
             per_pair[frame] = {'previous_frame': previous}
             for source, by_score in scores.items():
                 per_pair[frame][source] = {name: values[t] for name, values in by_score.items()}
-        return {'temporal': {'camera': self.fixed_view_camera, 'per_pair': per_pair}}
+        summary = {
+            source: {name: summarize(dict(zip(pair_frames, values)), higher_is_better=False)
+                     for name, values in by_score.items()}
+            for source, by_score in scores.items()
+        }
+        return {'temporal': {'camera': self.fixed_view_camera, 'per_pair': per_pair, 'summary': summary}}

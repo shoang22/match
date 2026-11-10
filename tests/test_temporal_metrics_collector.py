@@ -112,3 +112,29 @@ def test_pixels_outside_the_mask_do_not_change_the_real_raw_flicker():
     clean = collect(contexts(pred, real))['temporal']['per_pair']
     noisy = collect(contexts(pred, noisy_real))['temporal']['per_pair']
     assert [noisy[f]['real']['raw_flicker'] for f in FRAMES[1:]] == [clean[f]['real']['raw_flicker'] for f in FRAMES[1:]]
+
+
+def test_summary_has_the_mean_and_the_worst_frames_of_every_score():
+    # Only frame 32909 of the prediction has added noise, so the two pairs it is in (keyed 32909 and
+    # 32921) are the prediction's worst, and the clean pair (keyed 32897) comes last.
+    real, pred = translating(0), translating(0)
+    pred[2] = (pred[2] + 0.3 * torch.rand(pred[2].shape, generator=torch.Generator().manual_seed(3))).clamp(0, 1)
+    temporal = collect(contexts(pred, real))['temporal']
+
+    for source in SOURCES:
+        for score in SCORES:
+            summary = temporal['summary'][source][score]
+            values = [temporal['per_pair'][f][source][score] for f in FRAMES[1:]]
+            assert summary['mean'] == pytest.approx(sum(values) / 3)
+            worst_values = [w['value'] for w in summary['worst_frames']]
+            assert worst_values == sorted(values, reverse=True)  # all 3 pairs, most change first
+    for score in SCORES:
+        worst = [w['frame'] for w in temporal['summary']['prediction'][score]['worst_frames']]
+        assert set(worst[:2]) == {'32909', '32921'} and worst[2] == '32897', (score, worst)
+
+
+def test_a_single_frame_has_no_pairs():
+    temporal = collect(contexts(translating(1, n=1), translating(0, n=1), frames=FRAMES[:1]))['temporal']
+    assert temporal['per_pair'] == {}
+    assert math.isnan(temporal['summary']['prediction']['raw_flicker']['mean'])
+    assert temporal['summary']['real']['flow_aligned_error']['worst_frames'] == []
