@@ -1,7 +1,38 @@
 """What panels and metric collectors get for each source frame of the sequence evaluation run."""
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import torch
+
+if TYPE_CHECKING:  # the runner pulls in the model, TF and diffusers; keep this module light to import
+    from match.runner import MatchRunner
+    from match.sequence_eval.frames import SequenceFrames
+    from match.utils.data_util import MatchBatch
+
+
+@dataclass(frozen=True)
+class SequencePlan:
+    """What the run evaluates and how the grid video shows it, fixed before the first forward pass.
+
+    sequence: the frames to evaluate and the held-out cameras.
+    schedule: index of the source frame shown in every grid-video frame (outputs.output_frame_schedule).
+    fixed_view_camera: ID of the held-out camera used as the fixed novel viewpoint (closest to frontal).
+    """
+    sequence: 'SequenceFrames'
+    schedule: list
+    fixed_view_camera: str
+
+    @property
+    def heldout_camera_ids(self):
+        return self.sequence.heldout_camera_ids
+
+    @property
+    def n_output_frames(self):
+        return len(self.schedule)
+
+    def output_frame_indices(self, frame_index):
+        """Indices of the grid-video frames that show source frame `frame_index`."""
+        return [k for k, s in enumerate(self.schedule) if s == frame_index]
 
 
 @dataclass
@@ -31,17 +62,14 @@ class FrameContext:
     fixed_view_camera: ID of the held-out camera used as the fixed novel viewpoint (closest to frontal).
     output_frame_indices: indices of the grid-video frames that show this source frame.
     """
-    runner: object
+    runner: 'MatchRunner'
     frame_index: int
     frame_id: str
-    batch: object
+    batch: 'MatchBatch'
     gaussians: dict
     heldout: dict
     fixed_view_camera: str
     output_frame_indices: list
-    n_output_frames: int
-    fps: float
-    extras: dict = field(default_factory=dict)  # free-form per-frame data shared between panels and collectors
 
     @property
     def fixed_view(self) -> HeldOutView:
@@ -66,8 +94,7 @@ class FrameContext:
         return out['image'][0].float().clamp(0, 1)
 
 
-def build_frame_context(runner, batch, gaussians, heldout_camera_ids, fixed_view_camera, frame_index,
-                        output_frame_indices, n_output_frames, fps):
+def build_frame_context(runner, batch, gaussians, plan: SequencePlan, frame_index):
     """Renders every held-out camera with its real calibration and bundles the frame's data."""
     C2W = batch['extra_C2W'][0]
     fxfycxcy = batch['extra_fxfycxcy'][0]
@@ -78,9 +105,9 @@ def build_frame_context(runner, batch, gaussians, heldout_camera_ids, fixed_view
                                    bg_color=(1.0, 1.0, 1.0))['image'][0].float().clamp(0, 1)
     heldout = {
         camera: HeldOutView(camera, pred[e], real[e], mask[e], C2W[e], fxfycxcy[e])
-        for e, camera in enumerate(heldout_camera_ids)
+        for e, camera in enumerate(plan.heldout_camera_ids)
     }
     return FrameContext(
         runner=runner, frame_index=frame_index, frame_id=batch['frame'][0], batch=batch, gaussians=gaussians,
-        heldout=heldout, fixed_view_camera=fixed_view_camera, output_frame_indices=list(output_frame_indices),
-        n_output_frames=n_output_frames, fps=fps)
+        heldout=heldout, fixed_view_camera=plan.fixed_view_camera,
+        output_frame_indices=plan.output_frame_indices(frame_index))
