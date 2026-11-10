@@ -1,7 +1,8 @@
-"""Masked image-quality metrics (PSNR, SSIM, LPIPS) on image tensors.
+"""Masked image-quality (PSNR, SSIM, LPIPS) and temporal-consistency metrics.
 
 Plain functions with no dependence on the runner, dataset or model, so they run
-on CPU in tests. Keep imports light here: torch and lpips only.
+on CPU in tests. Keep imports light here: torch, plus lpips and torchvision
+imported lazily where needed.
 
 Conventions for every image metric:
   pred, real: float tensors in [0, 1], shape (3, H, W) or (1, 3, H, W).
@@ -12,6 +13,7 @@ Conventions for every image metric:
 
 import functools
 import math
+from typing import NamedTuple
 
 import torch
 
@@ -113,3 +115,58 @@ def masked_lpips(pred: torch.Tensor, real: torch.Tensor, mask: torch.Tensor,
   with torch.no_grad():
     lpips_map = model(pred, real, normalize=True)  # (1, 1, H, W)
   return lpips_map[mask].mean().item()
+
+
+# --- Temporal consistency -----------------------------------------------------
+#
+# Conventions for every temporal metric:
+#   frames: float tensor in [0, 1], shape (T, 3, H, W), T >= 2.
+#   masks: foreground masks, shape (T, H, W) or (T, 1, H, W). Bool, or float
+#     where values > 0.5 count as foreground.
+#   Pair t compares frames t and t + 1.
+
+
+class TemporalScores(NamedTuple):
+  """per_pair[t] scores frames (t, t + 1); mean is over the finite values."""
+  per_pair: list
+  mean: float
+
+
+def _prepare_sequence(frames: torch.Tensor, masks: torch.Tensor):
+  """Return frames as (T, C, H, W) float and masks as (T, 1, H, W) bool."""
+  if frames.dim() != 4 or frames.shape[0] < 2:
+    raise ValueError(f'expected frames (T >= 2, C, H, W), got {tuple(frames.shape)}')
+  t, _, h, w = frames.shape
+  if masks.dtype != torch.bool:
+    masks = masks > 0.5
+  if masks.dim() == 3:
+    masks = masks[:, None]
+  if tuple(masks.shape) != (t, 1, h, w):
+    raise ValueError(f'masks {tuple(masks.shape)} do not match frames {tuple(frames.shape)}')
+  return frames.float(), masks.to(frames.device)
+
+
+def _masked_mean_abs(a: torch.Tensor, b: torch.Tensor, valid: torch.Tensor) -> float:
+  """Mean |a - b| over the valid pixels (all channels); nan if none are valid."""
+  m = valid.expand_as(a)
+  if not m.any():
+    return math.nan
+  return (a[m] - b[m]).abs().mean().item()
+
+
+def _scores(per_pair) -> TemporalScores:
+  finite = [v for v in per_pair if math.isfinite(v)]
+  return TemporalScores(per_pair, sum(finite) / len(finite) if finite else math.nan)
+
+
+def raw_flicker(frames: torch.Tensor, masks: torch.Tensor) -> TemporalScores:
+  """Mean absolute change between consecutive frames, inside the mask.
+
+  Pair t averages |frame[t+1] - frame[t]| over all channels of the pixels that
+  are foreground in both frames. A pair with no such pixels scores nan.
+  """
+  frames, masks = _prepare_sequence(frames, masks)
+  return _scores([
+      _masked_mean_abs(frames[i + 1], frames[i], masks[i] & masks[i + 1])
+      for i in range(frames.shape[0] - 1)
+  ])
