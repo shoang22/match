@@ -7,9 +7,12 @@ GPU, the pretrained model and the data; run command in the config's header):
     --nnodes=1 --nproc-per-node=1 scripts/match/eval_sequence.py --gin_configs configs/match/eval_sequence_smoketest.gin
 Then, from the repo root:
   conda run -n match python -m pytest tests/test_eval_sequence_smoketest.py
+To check a smoke run written elsewhere (e.g. with --gin_bindings "OUT_DIR = '<dir>'"), set
+EVAL_SEQUENCE_SMOKE_DIR=<dir>.
 """
 import json
 import math
+import os
 from pathlib import Path
 
 import ffmpeg
@@ -17,7 +20,7 @@ import numpy as np
 import pytest
 
 SMOKE_CONFIG = Path('configs/match/eval_sequence_smoketest.gin')
-OUT_DIR = Path('experiments/match/eval_sequence/smoketest')
+OUT_DIR = Path(os.environ.get('EVAL_SEQUENCE_SMOKE_DIR', 'experiments/match/eval_sequence/smoketest'))
 FRAMES = ['32885', '32897', '32909']  # first 3 frames of SEN_a_good_morrow_to_you_my_boy, 0.4 s apart
 HELDOUT_CAMERA = '402040'
 INPUT_CAMERA_IDS = ['401875', '401919', '402020', '402012', '401920', '401965',
@@ -26,7 +29,12 @@ FPS = 24
 # 3 source frames x 0.4 s = 1.2 s = 28.8 output frames at 24 fps, rounded to whole frames.
 N_OUTPUT_FRAMES = 29
 PANEL_W, PANEL_H, LABEL_H = 512, 640, 32
-VIDEO_W, VIDEO_H = 2 * PANEL_W, LABEL_H + PANEL_H  # prediction and real panel side by side
+GRID_COLS = 2
+VIDEO_W, VIDEO_H = GRID_COLS * PANEL_W, 2 * (LABEL_H + PANEL_H)  # 2x2 grid of labelled panels
+PREDICTION_LABEL = f'MATCH prediction (cam {HELDOUT_CAMERA})'
+REAL_LABEL = f'Real held-out (cam {HELDOUT_CAMERA})'
+ORBIT_LABEL = 'Orbit'
+ORBIT_FRAMES = 24  # the smoke config's short orbit: back at the frontal start pose after 1 s
 
 pytestmark = pytest.mark.skipif(
     not (OUT_DIR / 'metrics.json').exists(),
@@ -66,20 +74,56 @@ def test_every_output_frame_records_its_source_frame(metrics):
     assert all(h in (9, 10) for h in holds), holds
 
 
-def test_panels_are_labelled_and_hold_still_between_source_frames(metrics, video_frames):
-    assert metrics['video']['panels'] == [f'MATCH prediction (cam {HELDOUT_CAMERA})', f'Real held-out (cam {HELDOUT_CAMERA})']
+def panel_frames(metrics, video_frames, label):
+    """The labelled tile (label band + image) of the named panel in every video frame, by its grid position."""
+    r, c = divmod(metrics['video']['panels'].index(label), GRID_COLS)
+    th = LABEL_H + PANEL_H
+    return video_frames[:, r * th:(r + 1) * th, c * PANEL_W:(c + 1) * PANEL_W]
+
+
+def frame_changes(tile):
+    """Mean absolute change of the panel image into each next video frame, in 0-255 levels."""
+    return np.abs(np.diff(tile[:, LABEL_H:], axis=0)).mean(axis=(1, 2, 3))
+
+
+def test_panels_are_labelled(metrics, video_frames):
+    panels = metrics['video']['panels']
+    assert panels[:2] == [PREDICTION_LABEL, REAL_LABEL]
+    assert panels[-1] == ORBIT_LABEL
     assert len(video_frames) == N_OUTPUT_FRAMES
+    for label in panels:
+        assert panel_frames(metrics, video_frames, label)[:, :LABEL_H].max() > 200, f"panel '{label}' has no label text"
+
+
+def test_static_panels_hold_still_between_source_frames(metrics, video_frames):
     source = metrics['output_frames']
-    for p in range(2):
-        panel = video_frames[:, :, p * PANEL_W:(p + 1) * PANEL_W]
-        label_band = panel[:, :LABEL_H]
-        assert label_band.max() > 200, f'panel {p} has no label text'
-        change = np.abs(np.diff(panel[:, LABEL_H:], axis=0)).mean(axis=(1, 2, 3))  # change into frame k+1
+    for label in [PREDICTION_LABEL, REAL_LABEL]:
+        change = frame_changes(panel_frames(metrics, video_frames, label))  # change into frame k+1
         within_hold = [c for k, c in enumerate(change) if source[k + 1] == source[k]]
         at_new_frame = [c for k, c in enumerate(change) if source[k + 1] != source[k]]
         # Held frames are repeats (codec noise only), never blends; both panels switch at the same output frames.
-        assert max(within_hold) < 0.5, (p, max(within_hold))
-        assert min(at_new_frame) > 2 * max(within_hold), (p, at_new_frame, max(within_hold))
+        assert max(within_hold) < 0.5, (label, max(within_hold))
+        assert min(at_new_frame) > 2 * max(within_hold), (label, at_new_frame, max(within_hold))
+
+
+def test_orbit_camera_moves_smoothly_on_every_output_frame(metrics, video_frames):
+    change = frame_changes(panel_frames(metrics, video_frames, ORBIT_LABEL))
+    codec_noise = max(frame_changes(panel_frames(metrics, video_frames, PREDICTION_LABEL))[k]
+                      for k in range(N_OUTPUT_FRAMES - 1)
+                      if metrics['output_frames'][k + 1] == metrics['output_frames'][k])
+    # The orbit never holds still, even within a source frame's hold ...
+    assert min(change) > 4 * codec_noise, (min(change), codec_noise)
+    # ... and moves in small steps without jumps.
+    assert max(change) < 3 * np.median(change), change
+
+
+def test_orbit_length_comes_from_the_smoke_config(metrics, video_frames):
+    orbit = panel_frames(metrics, video_frames, ORBIT_LABEL)[:, LABEL_H:]
+    steps = frame_changes(panel_frames(metrics, video_frames, ORBIT_LABEL))
+    # Frame ORBIT_FRAMES is back at the start pose; only the face (source frame 0.8 s later) differs.
+    back_at_start = np.abs(orbit[ORBIT_FRAMES] - orbit[0]).mean()
+    assert back_at_start < 0.5 * np.median(steps), (back_at_start, np.median(steps))
+    assert metrics['output_frames'][ORBIT_FRAMES] != metrics['output_frames'][0]
 
 
 def test_metrics_are_finite_for_every_frame_and_heldout_camera(metrics):
@@ -110,4 +154,4 @@ def test_pretrained_model_with_the_12_standard_inputs_on_every_frame(metrics):
 
 def test_gin_configs_are_copied():
     assert (OUT_DIR / 'config_0.gin').read_text() == SMOKE_CONFIG.read_text()
-    assert "OUT_DIR = 'experiments/match/eval_sequence/smoketest'" in (OUT_DIR / 'config_all.gin').read_text()
+    assert f"OUT_DIR = '{OUT_DIR}'" in (OUT_DIR / 'config_all.gin').read_text()

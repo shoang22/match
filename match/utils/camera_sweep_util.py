@@ -9,6 +9,12 @@ import ffmpeg
 import numpy as np
 import torch
 
+# Default sweep path of scripts/match/save_camera_sweeps.py: angle ranges in degrees, within the views the
+# model handles, and the focal-length scale of the sweep intrinsics.
+SWEEP_HORIZ_RANGE_DEG = (-40, 40)
+SWEEP_VERT_RANGE_DEG = (-15, 36)
+SWEEP_FOCAL_SCALE = 0.75
+
 
 def ellipse(xmin, xmax, ymin, ymax, sigma):
     """
@@ -96,7 +102,7 @@ def generate_camera_sweep_extrinsics(
     return C2W
 
 
-def sweep_intrinsics(fxfycxcy, focal_scale=0.75):
+def sweep_intrinsics(fxfycxcy, focal_scale=SWEEP_FOCAL_SCALE):
     """
     Intrinsics for the camera sweep: the focal length of the first input view
     of the first sample, scaled by focal_scale, with the principal point at the
