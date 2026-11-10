@@ -63,7 +63,9 @@ def test_preview_frames_are_grid_frames_not_blends(metrics):
     for i, k in enumerate(first_shown):
         same = np.abs(preview[i] - grid[k]).mean()
         others = [np.abs(preview[i] - grid[j]).mean() for j in first_shown if j != k]
-        assert same < 1.0, (i, same)  # codec noise only
+        # Codec noise only: ~1.05 levels with all 4 panels (both videos are h264-encoded from the same image),
+        # against ~6-8 between different source frames; a 50/50 blend of neighbours would sit near 3.
+        assert same < 2.0, (i, same)
         assert same < 0.25 * min(others), (i, same, others)
 
 
