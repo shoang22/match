@@ -76,7 +76,8 @@ class BaseSingleCaptureDataset(torch.utils.data.Dataset):
     SCENE_CENTER = np.array([0., 0., 0.], dtype=np.float32)
 
     # Name of the dataset type, e.g. 'ava-256'. Prediction stages (TEMPEH save_predictions) write each sample's
-    # outputs under a folder with this name.
+    # outputs under a folder with this name. It is the output folder name, kept separate from the registry key
+    # (`match.data.get_dataset_cls`, e.g. 'ava256' vs 'ava-256') so existing output paths stay the same.
     DATASET_TYPE: str = None
 
     # With a `uv_directory` configured, a UV map that fails to load is replaced by zeros when True. When False,

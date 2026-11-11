@@ -53,6 +53,7 @@ class CalibratedSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
             subject's left, y down, z toward the back of the head). Identity by default.
     """
 
+    # TEMPEH output folder name (see the base class); here it happens to equal the registry key
     DATASET_TYPE = 'calibrated'
     NUM_VERTS = 5741  # same as the Ava-256 dataset, so batches can mix both
     # A missing TEMPEH UV map skips the frame rather than feeding MATCH zeros
@@ -149,6 +150,8 @@ class CalibratedSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
             self.head_center = np.asarray(self.scene_center_override, dtype=np.float64).reshape(3)
         rotation = np.eye(3) if self.scene_rotation_override is None else np.asarray(self.scene_rotation_override)
         rotation = rotation.reshape(3, 3)
+        # Per-instance on purpose: these override the base class constants, because each capture has its own
+        # calibration units, head center and orientation (Ava and NeRSemble use one value per dataset type)
         self.SCENE_ROTATION = rotation.astype(np.float32)
         self.SCALE_FACTOR = np.array(self.scale_factor, dtype=np.float32)
         self.SCENE_CENTER = (self.scale_factor * rotation @ self.head_center).astype(np.float32)
