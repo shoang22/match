@@ -13,7 +13,10 @@ Images are read as sRGB (no gamma correction) and letterboxed into the model's
 1024x768 input, so square captures are not squashed.
 
 Write the masks to their own folder (e.g. next to, not inside, the real mask
-folder). Switching the dataset config from these to the real masks later only
+folder). OUTPUT_DIR is one flat folder of masks, usable directly as the dataset's
+mask_directory for a single capture. For a root holding several captures, write
+each capture to MASK_ROOT/<capture folder name> and point mask_directory at
+MASK_ROOT. Switching the dataset config from these to the real masks later only
 changes the mask folder path.
 
 With --contact-sheet-frame N, also writes OUTPUT_DIR/contact_sheets/frameNNNNNN.png:
