@@ -17,6 +17,8 @@ if not Path('assets').exists():
 
 from match import data  # noqa: E402
 
+pytestmark = pytest.mark.usefixtures('fail_instead_of_hanging')
+
 DATASET_NAME = 'calibrated'
 
 

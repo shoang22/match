@@ -1,0 +1,28 @@
+# Downloads images and foreground masks of the 3 TCE049 held-out cameras used as novel-view ground truth (never model inputs). Run after download_ava256_quickstart.gin. Masks exist only in the 4TB tier (~106 MB per camera).
+# conda run -n match python condor/run.py configs/data/download_ava256_heldout.gin
+# The script swallows worker errors: afterwards check that image/ and foreground_masks/ contain cam<ID>.zip for each ID and that the zips open.
+#
+# The cameras, their exact angles and why they were picked are listed with HELDOUT_CAMERA_IDS in configs/match/eval_sequence_SEN_a_good_morrow.gin.
+
+NAME = "download_ava256_heldout"
+OUT_DIR = 'data/ava-256'
+ID_FILE = 'assets/ava256/1_id.csv'
+CAMERAS = '402040 401905 402031'
+
+cmd/join_strings.strings = [
+  'python scripts/data/download_ava256.py',
+  ' --output-dir "', %OUT_DIR, '"',
+  ' --captures-file "', %ID_FILE, '"',
+  ' --assets foreground_masks image',
+  ' -j 8',
+  ' -s 4TB',
+  ' --cameras ', %CAMERAS
+]
+
+CondorParameters:
+  name = %NAME
+  batch_name = %NAME
+  base_dir = %OUT_DIR
+  cmd = @cmd/join_strings()
+  backup_root = None
+  backup_excludepatterns = ['third_party']

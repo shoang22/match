@@ -72,6 +72,7 @@ class TrainOptions(BaseTrainOptions):
         self.add_arg( cate='data', abbr='width', name='width', type=int, default=argparse.SUPPRESS)
         self.add_arg( cate='data', abbr='frame-stride', name='frame-stride', type=int, default=argparse.SUPPRESS)
         self.add_arg( cate='data', abbr='max-captures', name='max-captures', type=int, default=argparse.SUPPRESS)
+        self.add_arg( cate='data', abbr='segment', name='segment', type=str, default=argparse.SUPPRESS)  # Ava-256 seg_id; None = all segments
 
         # save_predictions datasets by type, e.g.
         # "[{'type': 'ava256', 'root_path': 'data/ava-256', 'camera_angles': [[0,0], ...], 'height': 256, 'width': 167, 'frame_stride': 10}]".
@@ -159,6 +160,7 @@ class TrainOptions(BaseTrainOptions):
             'width': None,
             'frame-stride': None,
             'max-captures': None,
+            'segment': None,
             'uv-n-samples': -1,
             'subjects': None,
             'datasets': None,

@@ -19,6 +19,8 @@ from match.utils import gin_util  # noqa: E402,F401  registers join_strings, as 
 import synthetic_capture as synth  # noqa: E402
 from test_calibrated_capture_dataset import UV_COLOR, write_uv_maps  # noqa: E402
 
+pytestmark = pytest.mark.usefixtures('fail_instead_of_hanging')
+
 PRETRAINED_CAMERA_ANGLES = synth.AVA_CAMERA_ANGLES
 
 
