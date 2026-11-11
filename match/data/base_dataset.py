@@ -75,6 +75,10 @@ class BaseSingleCaptureDataset(torch.utils.data.Dataset):
     SCALE_FACTOR = np.array(1., dtype=np.float32) 
     SCENE_CENTER = np.array([0., 0., 0.], dtype=np.float32)
 
+    # Name of the dataset type, e.g. 'ava-256'. Prediction stages (TEMPEH save_predictions) write each sample's
+    # outputs under a folder with this name.
+    DATASET_TYPE: str = None
+
     PER_VIEW_KEYS = ['C2W', 'fxfycxcy', 'image', 'uv', 'sg_parts', 'mask', 'camera', 'bboxs']
 
 
@@ -505,6 +509,10 @@ class BaseMultiCaptureDataset(torch.utils.data.Dataset):
     """
 
     SINGLE_CAPTURE_DATASET_CLS = BaseSingleCaptureDataset
+
+    @property
+    def DATASET_TYPE(self) -> str:
+        return self.SINGLE_CAPTURE_DATASET_CLS.DATASET_TYPE
 
     def __init__(
         self,
