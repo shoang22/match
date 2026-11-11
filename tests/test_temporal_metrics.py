@@ -110,3 +110,71 @@ def test_pixels_failing_forward_backward_check_are_ignored():
 
     scores = metric_util.flow_aligned_error(frames, make_masks(), flow=(forward, backward))
     assert scores.per_pair == pytest.approx([0.0] * (T - 1), abs=1e-6)
+
+
+def _lai_motion_boundary(flow: torch.Tensor) -> torch.Tensor:
+    """Reference: the motion-boundary test of Lai et al. 2018's evaluation code
+    (utils.compute_flow_gradients / detect_occlusion, fast_blind_video_consistency),
+    ported per pixel for one (2, H, W) flow."""
+    u, v = flow[0], flow[1]
+    grads = []
+    for c in (u, v):
+        dx = torch.zeros_like(c)
+        dy = torch.zeros_like(c)
+        dx[:, :-1] = c[:, :-1] - c[:, 1:]
+        dy[:-1, :] = c[:-1, :] - c[1:, :]
+        grads += [dx, dy]
+    grad_sq = sum(g ** 2 for g in grads)
+    return grad_sq > 0.01 * (u ** 2 + v ** 2) + 0.002
+
+
+def test_motion_boundary_matches_lai_reference_code():
+    g = torch.Generator().manual_seed(3)
+    low = 4 * torch.randn(2, 2, 8, 8, generator=g)
+    flow = torch.nn.functional.interpolate(low, size=(H, W), mode='bilinear', align_corners=False)
+    flow[:, :, 60:, :] += 1.5  # a sharp jump too
+    got = metric_util._motion_boundary(flow)
+    assert got.shape == (2, 1, H, W) and got.dtype == torch.bool
+    for i in range(2):
+        assert torch.equal(got[i, 0], _lai_motion_boundary(flow[i]))
+
+
+def test_uniform_motion_has_no_motion_boundary():
+    flow = torch.tensor([5.0, -3.0]).view(1, 2, 1, 1).expand(1, 2, H, W)
+    assert not metric_util._motion_boundary(flow).any()
+
+
+def test_motion_boundary_flags_the_pixel_before_a_jump():
+    flow = torch.zeros(1, 2, H, W)
+    flow[:, 1, 64:, :] = 3.0  # lower half moves down 3 px, upper half still
+    boundary = metric_util._motion_boundary(flow)[0, 0]
+    assert boundary[63].all()  # still side, just before the jump
+    assert not boundary[:63].any() and not boundary[64:].any()
+
+
+def test_motion_boundary_tolerance_grows_with_motion():
+    # u ramps by 0.3 px per column: |grad|^2 = 0.09 everywhere but the last column.
+    ramp = 0.3 * torch.arange(W, dtype=torch.float32).view(1, W).expand(H, W)
+    slow = torch.zeros(1, 2, H, W)
+    slow[0, 0] = ramp - ramp.mean()                # |w| small near the middle
+    fast = slow.clone()
+    fast[0, 1] = 20.0                              # same ramp, plus fast vertical motion
+    mid = (slice(None), slice(W // 2 - 2, W // 2 + 2))
+    assert metric_util._motion_boundary(slow)[0, 0][mid].all()
+    assert not metric_util._motion_boundary(fast)[0, 0][mid].any()
+
+
+def test_pixels_on_motion_boundaries_are_ignored():
+    # Flat grey frames, so a wrong flow can't change the warp; frame t+1 is corrupted only
+    # on row 63. The backward flow jumps by 0.5 px below row 63: small enough to pass the
+    # forward-backward check, but a motion boundary on row 63.
+    frames = torch.full((2, 3, H, W), 0.5)
+    frames[1, :, 63, :] = 1.0
+    masks = torch.zeros(2, H, W, dtype=torch.bool)
+    masks[:, 32:96, 32:96] = True
+    backward = torch.zeros(1, 2, H, W)
+    backward[:, 1, 64:, :] = 0.5
+    forward = -backward
+
+    scores = metric_util.flow_aligned_error(frames, masks, flow=(forward, backward))
+    assert scores.per_pair == pytest.approx([0.0], abs=1e-6)

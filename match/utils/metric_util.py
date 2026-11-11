@@ -246,6 +246,23 @@ def _consistent(forward: torch.Tensor, backward: torch.Tensor,
     return lhs < rhs
 
 
+def _motion_boundary(flow: torch.Tensor, beta1: float = 0.01, beta2: float = 0.002) -> torch.Tensor:
+    """Motion-boundary test (Ruder et al. 2016, Eq. 6) for flow (N, 2, H, W) = (u, v).
+
+    A pixel is on a motion boundary, where flow is unreliable, if
+        |grad u|^2 + |grad v|^2 > beta1 (u^2 + v^2) + beta2
+    i.e. the squared Frobenius norm of the flow's Jacobian is large next to the flow
+    itself. Gradients are forward differences (neighbour - here, right and below), 0 on
+    the last column / row, as in Lai et al. 2018's evaluation code
+    (fast_blind_video_consistency, utils.compute_flow_gradients), so only the pixel
+    before a jump is flagged. Returns (N, 1, H, W) bool, True on a boundary.
+    """
+    dx = torch.diff(flow, dim=-1, append=flow[..., -1:])
+    dy = torch.diff(flow, dim=-2, append=flow[..., -1:, :])
+    grad_sq = (dx.pow(2) + dy.pow(2)).sum(1, keepdim=True)
+    return grad_sq > beta1 * flow.pow(2).sum(1, keepdim=True) + beta2
+
+
 def flow_aligned_error(frames: torch.Tensor, masks: torch.Tensor, flow=None,
                        reference: torch.Tensor = None, raft_size: str = 'large',
                        raft_batch_size: int = 8) -> TemporalScores:
@@ -255,8 +272,9 @@ def flow_aligned_error(frames: torch.Tensor, masks: torch.Tensor, flow=None,
     warped frame[t]| is averaged over all channels of the valid pixels. A pixel p
     of frame t + 1 is valid when it is foreground in mask t + 1, every pixel of
     frame t that the bilinear warp reads from is foreground in mask t (and inside
-    the image), and the flow passes the forward-backward consistency check. A
-    pair with no valid pixels scores nan.
+    the image), the flow passes the forward-backward consistency check, and the
+    backward flow is not on a motion boundary (`_motion_boundary`). Both flow tests
+    follow Lai et al. 2018's evaluation code. A pair with no valid pixels scores nan.
 
     The flow comes from, in order of precedence:
         flow: (forward, backward) as returned by `raft_flow`, e.g. estimated once on
@@ -281,5 +299,5 @@ def flow_aligned_error(frames: torch.Tensor, masks: torch.Tensor, flow=None,
     warped = _warp(frames[:-1], backward)
     # A warped mask of 1 means every bilinear tap with non-zero weight was foreground.
     warped_mask = _warp(masks[:-1].float(), backward) > 0.999
-    valid = masks[1:] & warped_mask & _consistent(forward, backward)
+    valid = masks[1:] & warped_mask & _consistent(forward, backward) & ~_motion_boundary(backward)
     return _scores([_masked_mean_abs(frames[i + 1], warped[i], valid[i]) for i in range(n)])
