@@ -55,6 +55,8 @@ class CalibratedSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
 
     DATASET_TYPE = 'calibrated'
     NUM_VERTS = 5741  # same as the Ava-256 dataset, so batches can mix both
+    # A missing TEMPEH UV map skips the frame rather than feeding MATCH zeros
+    ZERO_FILL_MISSING_UV = False
 
     def __init__(self, capture: CalibratedCapture, scale_factor: float = 1 / 1000,
                  scene_center: list | None = None, scene_rotation: list | None = None, **kwargs):

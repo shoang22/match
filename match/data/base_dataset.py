@@ -79,6 +79,10 @@ class BaseSingleCaptureDataset(torch.utils.data.Dataset):
     # outputs under a folder with this name.
     DATASET_TYPE: str = None
 
+    # With a `uv_directory` configured, a UV map that fails to load is replaced by zeros when True. When False,
+    # the error propagates; a missing file marks the frame/camera invalid and the sample is skipped.
+    ZERO_FILL_MISSING_UV: bool = True
+
     PER_VIEW_KEYS = ['C2W', 'fxfycxcy', 'image', 'uv', 'sg_parts', 'mask', 'camera', 'bboxs']
 
 
@@ -276,6 +280,8 @@ class BaseSingleCaptureDataset(torch.utils.data.Dataset):
                 try:
                     uv = self.load_uv(frame_id=frame_id, camera_id=camera_id)
                 except Exception as e:
+                    if not self.ZERO_FILL_MISSING_UV:
+                        raise
                     # if not camera_id in extra_camera_ids:  # don't need the uvmaps for extra cameras
                     #     print(f'WARNING: DIDNT FIND UVMAP OF INPUT IMAGE: {self.capture.sid}-{frame_id}-{camera_id}')
                     uv = np.zeros_like(img)

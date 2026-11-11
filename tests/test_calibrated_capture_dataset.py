@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from PIL import Image
 
 if not Path('assets').exists():
     pytest.skip('assets/ is missing; see the worktree section of CLAUDE.md', allow_module_level=True)
@@ -300,3 +301,45 @@ def test_nonzero_skew_in_the_calibration_raises(tmp_path):
     capture = synth.write_capture(tmp_path / 'capture', tmp_path / 'masks', nframes=1, skew_camera=3)
     with pytest.raises(ValueError, match='skew'):
         build_dataset(capture)
+
+
+# --- TEMPEH handoff: coarse mesh and per-camera UV maps ---
+
+UV_COLOR = (200, 40, 90)
+
+
+def write_uv_maps(uv_dir, capture_name, frames, missing=()):
+    """TEMPEH's layout: <uv_dir>/<subject>/<sequence>/<frame>/uv_cam<id>.png, flat-colored, native size."""
+    uv = np.empty((synth.NATIVE_HEIGHT, synth.NATIVE_WIDTH, 3), np.uint8)
+    uv[:] = UV_COLOR
+    for frame in frames:
+        folder = Path(uv_dir, capture_name, capture_name, f'{frame:06d}')
+        folder.mkdir(parents=True, exist_ok=True)
+        for camera in range(len(synth.RIG_ANGLES_DEG)):
+            if (frame, camera) not in missing:
+                Image.fromarray(uv).save(folder / f'uv_cam{camera}.png')
+
+
+def test_uv_maps_from_the_configured_directory_reach_the_sample(tmp_path, capture):
+    write_uv_maps(tmp_path / 'uv', capture.root.name, frames=[0])
+    uv = build_dataset(capture, uv_directory=str(tmp_path / 'uv'), nframes=1)[0]['uv'].numpy()
+    for channel, value in enumerate(UV_COLOR):
+        np.testing.assert_allclose(uv[:, channel], value / 255, atol=1e-6)
+
+
+def test_a_missing_uv_map_skips_the_frame_instead_of_zero_filling(tmp_path, capture, caplog):
+    write_uv_maps(tmp_path / 'uv', capture.root.name, frames=[0, 1], missing={(0, 5)})
+    dataset = build_dataset(capture, uv_directory=str(tmp_path / 'uv'), nframes=2)
+
+    with caplog.at_level(logging.WARNING):
+        sample = dataset[0]
+    assert sample['frame'] == '000001'
+    assert (sample['uv'] > 0).all()
+    assert any('000000' in r.getMessage() and 'uv_cam5.png' in r.getMessage() for r in caplog.records)
+
+
+def test_no_frame_is_returned_with_a_zero_filled_uv_map(tmp_path, capture):
+    write_uv_maps(tmp_path / 'uv', capture.root.name, frames=[0], missing={(0, 5)})
+    dataset = build_dataset(capture, uv_directory=str(tmp_path / 'uv'), nframes=1)
+    with pytest.raises(RuntimeError, match='No loadable frame'):
+        dataset[0]
