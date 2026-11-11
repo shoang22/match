@@ -3,6 +3,7 @@
 Every test builds the dataset from config kwargs through MATCH's registry, then
 uses only `len()` and indexing. CPU-only; the capture is synthesized on disk.
 """
+import dataclasses
 import logging
 import re
 from pathlib import Path
@@ -251,7 +252,21 @@ def test_a_resize_target_that_would_change_the_aspect_ratio_is_rejected(capture)
         build_dataset(capture, height=128, width=128)
 
 
+def test_undistortion_keeps_image_size_and_intrinsics(tmp_path, capture, sample):
+    pinhole_rig = {i: dataclasses.replace(cam, dist=np.zeros(5)) for i, cam in capture.cameras.items()}
+    pinhole_capture = synth.write_capture(tmp_path / 'pinhole', tmp_path / 'pinhole masks', nframes=1,
+                                          cameras=pinhole_rig)
+    reference = build_dataset(pinhole_capture)[0]
+    assert sample['camera'].tolist() == reference['camera'].tolist()
+    for key in ('image', 'mask'):
+        assert sample[key].shape == reference[key].shape, key
+    for key in ('fxfycxcy', 'C2W'):
+        np.testing.assert_array_equal(sample[key].numpy(), reference[key].numpy(), err_msg=key)
+
+
 def test_mask_markers_coincide_with_image_markers(sample):
+    # Masks left distorted would sit up to ~1.9 px off; undistorted with the images, within ~0.6 px
+    # (the rest is the base class resizing masks with nearest-neighbor and images bilinearly).
     for view in range(len(sample['camera'])):
         np.testing.assert_allclose(centroid(sample['mask'][view, 0]), centroid(sample['image'][view, 0]), atol=1.0)
 
@@ -262,8 +277,10 @@ def test_single_channel_and_rgb_masks_binary_or_soft_are_accepted(tmp_path, mask
     sample = build_dataset(capture)[0]
     mask = sample['mask'].numpy()
     assert mask.shape[1] == 1
+    assert mask.min() >= 0 and mask.max() <= 1
     if mask_mode.endswith('binary'):
-        assert set(np.unique(mask)) == {0.0, 1.0}
+        # 0 and 255 come through as 0 and 1; undistortion's bilinear remap may soften the edges
+        assert mask.min() == 0.0 and mask.max() == 1.0
     else:
         assert ((mask > 0.05) & (mask < 0.95)).any()
     for view in range(len(sample['camera'])):  # the first channel is the one used
