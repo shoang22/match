@@ -88,12 +88,14 @@ class _RedIsHairModel:
 
     def __init__(self):
         self.input_shapes = []
+        self.inputs = []
 
     def __call__(self, x):
         import torch
         import torch.nn.functional as F
 
         self.input_shapes.append(tuple(x.shape))
+        self.inputs.append(x.float().clone())
         red = F.avg_pool2d(x[:, :1].float(), 4)
         logits = torch.zeros(x.shape[0], self.num_classes, *red.shape[2:])
         logits[:, HAIR] = red[:, 0]
@@ -166,6 +168,32 @@ def test_contact_sheet_is_not_written_unless_requested(tmp_path):
 
     assert result is None
     assert not (out / "contact_sheets").exists()
+
+
+def test_sapiens_segmenter_letterboxes_instead_of_squashing():
+    # Capture images are square, Sapiens' input is portrait: the face must keep its
+    # aspect ratio, and the class map must still line up with the raw image.
+    import torch
+
+    model = _RedIsHairModel()
+    segment = capture_masks.SapiensSegmenter(
+        model, input_shape=(96, 64), device="cpu", dtype=torch.float32
+    )
+    img = np.full((60, 60, 3), 200, dtype=np.uint8)
+    img[:, :, 0] = 20  # not red
+    img[:15] = (230, 20, 20)  # red top band -> Hair
+
+    (class_map,) = segment([img])
+
+    pixels = model.inputs[0][0] * torch.tensor(segment.STD).view(3, 1, 1) + torch.tensor(
+        segment.MEAN
+    ).view(3, 1, 1)
+    rows, cols = np.nonzero(pixels.sum(dim=0).numpy() > 1)
+    content_h, content_w = rows.max() - rows.min() + 1, cols.max() - cols.min() + 1
+    assert content_w == 64 and content_h == 64  # square stays square
+    assert class_map.shape == (60, 60)
+    assert np.all(class_map[:12] == HAIR)
+    assert np.all(class_map[18:] == BACKGROUND)
 
 
 def _export_fake_checkpoint(path):
