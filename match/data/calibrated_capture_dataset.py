@@ -281,6 +281,7 @@ class CalibratedMultiCaptureDataset(base_dataset.BaseMultiCaptureDataset):
     Args (besides the base class's):
         mask_directory: see above. Required.
         subject_id, sequence_id: override the ids, which default to the capture folder name.
+            Only allowed when `root_path` holds exactly one capture.
     """
     SINGLE_CAPTURE_DATASET_CLS = CalibratedSingleCaptureDataset
 
@@ -304,6 +305,10 @@ class CalibratedMultiCaptureDataset(base_dataset.BaseMultiCaptureDataset):
         if not dirs:
             raise FileNotFoundError(f'No capture found in {base_dir}: neither it nor any subfolder '
                                     f'contains a calibration file.')
+        if len(dirs) > 1 and (self.subject_id is not None or self.sequence_id is not None):
+            raise ValueError(f'subject_id/sequence_id name a single capture, but {base_dir} holds '
+                             f'{len(dirs)} captures ({", ".join(d.name for d in dirs)}), whose outputs '
+                             f'would collide. Point root_path at one capture, or drop the overrides.')
         root_is_capture = dirs == [base_dir]
         captures = [CalibratedCapture(d.name,
                                       mask_dir=self.mask_directory if root_is_capture else self.mask_directory / d.name,
