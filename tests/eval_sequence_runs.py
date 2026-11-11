@@ -13,7 +13,7 @@ import ffmpeg
 import numpy as np
 import pytest
 
-from tce049 import FIXED_VIEW_CAMERA, HELDOUT_CAMERAS, REPO_ROOT, SEGMENT_FRAMES
+from tce049 import FIXED_VIEW_CAMERA, FRAME_IDS_PER_SECOND, HELDOUT_CAMERAS, REPO_ROOT, SEGMENT_FRAMES
 
 FPS = 24
 PREVIEW_FPS = 10
@@ -24,6 +24,7 @@ VIDEO_W, VIDEO_H = GRID_COLS * PANEL_W, 2 * (LABEL_H + PANEL_H)  # 2x2 grid of l
 PANELS = [f'MATCH prediction (cam {FIXED_VIEW_CAMERA})', f'Real held-out (cam {FIXED_VIEW_CAMERA})',
           f'TEMPEH coarse mesh (cam {FIXED_VIEW_CAMERA})', 'Orbit']
 PLOTS = ['plot_image_metrics.png', 'plot_temporal_metrics.png']
+FRAME_SPACING_S = 12 / FRAME_IDS_PER_SECOND  # between consecutive 4TB frames
 # Top-level sections of metrics.json. An output folder whose metrics.json lacks one was written by older code.
 METRICS_SECTIONS = ['model', 'subject', 'segments', 'frames', 'heldout_cameras', 'fixed_view_camera', 'input_cameras',
                     'video', 'output_frames', 'preview', 'per_frame', 'summary', 'temporal', 'plots']
@@ -36,7 +37,7 @@ class EvalRun:
     out_dir_setting: str  # OUT_DIR as the run was configured (relative to the repo root unless absolute)
     frames: list
     heldout_cameras: list
-    n_output_frames: int  # source frames 0.4 s apart, so len(frames) * 0.4 s * 24 fps, rounded
+    n_output_frames: int  # source frames 2/15 s apart, so len(frames) * 2/15 s * 24 fps, rounded
 
     @property
     def out_dir(self) -> Path:
@@ -44,17 +45,17 @@ class EvalRun:
 
     @property
     def duration(self):
-        return len(self.frames) * 0.4
+        return len(self.frames) * FRAME_SPACING_S
 
 
 SMOKE = EvalRun(
     name='smoke', config='configs/match/eval_sequence_smoketest.gin',
     out_dir_setting=os.environ.get('EVAL_SEQUENCE_SMOKE_DIR', 'experiments/match/eval_sequence/smoketest'),
-    frames=SEGMENT_FRAMES[:3], heldout_cameras=[FIXED_VIEW_CAMERA], n_output_frames=29)
+    frames=SEGMENT_FRAMES[:3], heldout_cameras=[FIXED_VIEW_CAMERA], n_output_frames=10)
 FULL = EvalRun(
     name='full', config='configs/match/eval_sequence_SEN_a_good_morrow.gin',
     out_dir_setting=os.environ.get('EVAL_SEQUENCE_FULL_DIR', 'experiments/match/eval_sequence/SEN_a_good_morrow'),
-    frames=SEGMENT_FRAMES, heldout_cameras=list(HELDOUT_CAMERAS), n_output_frames=384)
+    frames=SEGMENT_FRAMES, heldout_cameras=list(HELDOUT_CAMERAS), n_output_frames=128)
 
 
 def load_metrics(run: EvalRun):

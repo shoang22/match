@@ -12,7 +12,7 @@ from PIL import Image
 
 from eval_sequence_runs import (FPS, FULL, PANELS, PIX_FMT, PLOTS, PREVIEW_FPS, SMOKE, VIDEO_H, VIDEO_W,
                                 config_bindings, load_metrics, probe_video)
-from tce049 import FIXED_VIEW_CAMERA, INPUT_CAMERA_IDS, REPO_ROOT
+from tce049 import FIXED_VIEW_CAMERA, FRAME_IDS_PER_SECOND, INPUT_CAMERA_IDS, REPO_ROOT
 
 # The spec's metrics and whether a higher value is better. Runs may record more.
 IMAGE_METRICS = {'psnr': True, 'ssim': True, 'lpips': False}
@@ -43,6 +43,7 @@ def assert_summary(summary, values, higher_is_better):
 
 
 def test_grid_video_has_the_true_duration_at_24_fps(run, metrics):
+    assert metrics['video']['capture_fps'] == FRAME_IDS_PER_SECOND
     stream, duration = probe_video(run.out_dir / metrics['video']['file'])
     assert stream['avg_frame_rate'] == f'{FPS}/1'
     assert (int(stream['width']), int(stream['height'])) == (VIDEO_W, VIDEO_H)
@@ -67,9 +68,9 @@ def test_every_grid_video_frame_records_its_source_frame(run, metrics):
     assert len(output_frames) == run.n_output_frames
     assert sorted(set(output_frames), key=int) == run.frames
     assert output_frames == sorted(output_frames, key=int)
-    # each source frame is held for 0.4 s = 9.6 output frames, rounded to 9 or 10
+    # each source frame is held for 2/15 s = 3.2 output frames, rounded to 3 or 4
     holds = [output_frames.count(f) for f in run.frames]
-    assert all(h in (9, 10) for h in holds), holds
+    assert all(h in (3, 4) for h in holds), holds
 
 
 def test_grid_has_the_four_panels(metrics):

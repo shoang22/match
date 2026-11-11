@@ -103,7 +103,7 @@ def write_outputs(out_dir, video, preview, metrics):
 
 @gin.configurable()
 def eval_sequence(opt: Options, out_dir: str = None, heldout_camera_ids: list = None, fps: int = 24,
-                  capture_fps: int = 30, preview_fps: int = 10, store_config_files: list = ()):
+                  capture_fps: int = 90, preview_fps: int = 10, store_config_files: list = ()):
     """Evaluates the pretrained model on every frame of the configured segment. See the module docstring."""
     if not out_dir or not heldout_camera_ids:
         raise ValueError('eval_sequence.out_dir and eval_sequence.heldout_camera_ids must be set in the config')
