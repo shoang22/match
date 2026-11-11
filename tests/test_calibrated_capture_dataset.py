@@ -126,8 +126,28 @@ def test_subfolders_with_a_calibration_file_are_captures_named_after_their_folde
     assert [(s['subject'], s['sequence']) for s in (dataset[0], dataset[2])] == [
         ('background 1', 'background 1'), ('take2', 'take2')]
 
+
+def test_configured_ids_replace_the_folder_name_of_a_single_capture(capture):
     overridden = build_dataset(capture, subject_id='S01', sequence_id='outdoor')[0]
     assert (overridden['subject'], overridden['sequence']) == ('S01', 'outdoor')
+
+
+@pytest.mark.parametrize('override', [dict(subject_id='S01'), dict(sequence_id='outdoor')])
+def test_configured_ids_on_a_root_of_several_captures_raise_instead_of_colliding(tmp_path, override):
+    root, masks = tmp_path / 'root', tmp_path / 'masks'
+    synth.write_capture(root / 'take1', masks / 'take1', nframes=1)
+    synth.write_capture(root / 'take2', masks / 'take2', nframes=1)
+    capture = synth.SyntheticCapture(root=root, mask_dir=masks)
+    with pytest.raises(ValueError, match=r'2 captures.*take1.*take2'):
+        build_dataset(capture, **override)
+
+
+def test_configured_ids_apply_to_a_root_holding_exactly_one_capture_subfolder(tmp_path):
+    root, masks = tmp_path / 'root', tmp_path / 'masks'
+    synth.write_capture(root / 'take1', masks / 'take1', nframes=1)
+    capture = synth.SyntheticCapture(root=root, mask_dir=masks)
+    sample = build_dataset(capture, subject_id='S01', sequence_id='outdoor')[0]
+    assert (sample['subject'], sample['sequence']) == ('S01', 'outdoor')
 
 
 def test_building_without_a_mask_folder_raises_a_clear_error(capture):
