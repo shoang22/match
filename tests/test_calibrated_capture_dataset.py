@@ -155,17 +155,58 @@ def test_building_without_a_mask_folder_raises_a_clear_error(capture):
         build_dataset(capture, mask_directory=None)
 
 
+# The sample contract an Ava-256 sample has with 12 camera angles, a CROP_HEIGHT x CROP_WIDTH head crop and
+# no ground-truth vertices: key -> (type name, dtype, shape). Shapes with V = 12 views. Recorded from Ava-256;
+# the Ava test below checks that Ava still satisfies it.
+V = len(synth.AVA_CAMERA_ANGLES)
+SAMPLE_CONTRACT = {
+    'C2W': ('Tensor', 'torch.float32', (V, 4, 4)),
+    'bboxs': ('Tensor', 'torch.int32', (V, 4)),
+    'camera': ('Tensor', 'torch.int64', (V,)),
+    'coarse_verts': ('Tensor', 'torch.float32', (0, 3)),
+    'frame': ('str', None, None),
+    'fxfycxcy': ('Tensor', 'torch.float32', (V, 4)),
+    'headpose': ('Tensor', 'torch.float32', (4, 4)),
+    'idindex': ('int', None, None),
+    'image': ('Tensor', 'torch.float32', (V, 3, CROP_HEIGHT, CROP_WIDTH)),
+    'mask': ('Tensor', 'torch.float32', (V, 1, CROP_HEIGHT, CROP_WIDTH)),
+    'scene_center': ('Tensor', 'torch.float32', (3,)),
+    'scene_rotation': ('Tensor', 'torch.float32', (3, 3)),
+    'scene_scale': ('Tensor', 'torch.float32', ()),
+    'sequence': ('str', None, None),
+    'sg_parts': ('Tensor', 'torch.uint8', (V, 1, CROP_HEIGHT, CROP_WIDTH)),
+    'subject': ('str', None, None),
+    'uv': ('Tensor', 'torch.float32', (V, 3, CROP_HEIGHT, CROP_WIDTH)),
+    'verts': ('Tensor', 'torch.float32', (5741, 3)),
+}
+
+
+def sample_contract(sample):
+    return {key: (type(value).__name__,
+                  str(value.dtype) if hasattr(value, 'dtype') else None,
+                  tuple(value.shape) if hasattr(value, 'shape') else None)
+            for key, value in sample.items()}
+
+
+CONTRACT_KWARGS = dict(camera_angles=synth.AVA_CAMERA_ANGLES, head_crop=True, head_crop_height=CROP_HEIGHT,
+                       head_crop_width=CROP_WIDTH, training=None, require_verts=False,
+                       require_segmentation=False, nframes=1)
+
+
+def test_sample_keys_types_and_per_view_shapes_follow_the_ava_sample_contract(capture):
+    assert sample_contract(build_dataset(capture, **CONTRACT_KWARGS)[0]) == SAMPLE_CONTRACT
+
+
 AVA_ROOT = Path('data/ava-256')
 
 
 @pytest.mark.skipif(not AVA_ROOT.exists(), reason='needs data/ava-256 for the reference sample')
 def test_sample_keys_dtypes_and_per_view_shapes_match_ava(capture):
-    common = dict(camera_angles=synth.AVA_CAMERA_ANGLES, head_crop=True, head_crop_height=CROP_HEIGHT,
-                  head_crop_width=CROP_WIDTH, training=None, require_verts=False,
-                  require_segmentation=False, nframes=1)
+    common = CONTRACT_KWARGS
     expected = data.get_dataset_cls('ava256')(root_path=str(AVA_ROOT), height=786, width=512, **common)[0]
     sample = build_dataset(capture, **common)[0]
 
+    assert sample_contract(expected) == SAMPLE_CONTRACT  # the recorded contract is still Ava's
     assert set(sample) == set(expected)
     for key, ref in expected.items():
         value = sample[key]
