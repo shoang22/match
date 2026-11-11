@@ -16,6 +16,7 @@ import numpy as np
 from PIL import Image
 
 from match.data import base_dataset, camera_calibration
+from match.utils import data_util
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,30 @@ class CalibratedSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
         self.scene_center_override = scene_center
         self.scene_rotation_override = scene_rotation
         super().__init__(capture=capture, **kwargs)
+        self._log_camera_slots()
+
+    def _log_camera_slots(self):
+        """Logs which camera the camera-angle mechanism assigns to each target angle, and how far off it is."""
+        angles = self.camera_angles
+        if angles is None:
+            return
+        if any(isinstance(a, (list, tuple)) for angle in angles for a in angle):
+            logger.info(f'{self.dir}: camera angles are sampled from ranges; no fixed slot assignment to log')
+            return
+        campos = np.stack([self.campos[cam] for cam in self.cameras]).astype(np.float64)
+        chosen = data_util.sample_cameras_from_angles(campos.copy(), angles, temperature=1, ncams_per_angle=1)
+        directions = campos / np.linalg.norm(campos, axis=1, keepdims=True)
+        lines = []
+        for slot, (cam_idx, (az, el)) in enumerate(zip(chosen, angles)):
+            az_r, el_r = np.deg2rad(az), np.deg2rad(el)
+            target = np.array([np.sin(az_r) * np.cos(el_r), -np.sin(el_r), -np.cos(az_r) * np.cos(el_r)])
+            error = np.rad2deg(np.arccos(np.clip(directions[cam_idx] @ target, -1, 1)))
+            lines.append(f'  camera {self.cameras[cam_idx]} -> slot {slot} [az {az}, el {el}], '
+                         f'angular error {error:.1f} deg')
+        unused = [cam for i, cam in enumerate(self.cameras) if i not in set(chosen)]
+        if unused:
+            lines.append(f'  unused cameras: {", ".join(unused)}')
+        logger.info(f'{self.dir}: camera-angle slot assignment\n' + '\n'.join(lines))
 
     def load_metadata(self):
         self.calibration = {str(i): c for i, c in camera_calibration.read_calibration(self.dir).items()}
@@ -93,6 +118,22 @@ class CalibratedSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
             frames = frames[:self.nframes]
         self.frame_ids = [f'{f:06d}' for f in frames]
         self.image_names = {f'{f:06d}': image_names[f] for f in frames}
+        self._flag_missing_files()
+
+    def _flag_missing_files(self):
+        """Marks frame/camera pairs without an image or a mask invalid, so the base class skips them."""
+        if not self.mask_dir.is_dir():
+            raise FileNotFoundError(f'Mask directory {self.mask_dir} does not exist')
+        mask_names = {p.name for p in self.mask_dir.iterdir()}
+        for frame_id in self.frame_ids:
+            names = self.image_names[frame_id]
+            missing_images = [cam for cam in self.calibration if cam not in names]
+            missing_masks = [cam for cam, name in names.items() if cam in self.calibration and name not in mask_names]
+            for kind, cameras in (('image', missing_images), ('mask', missing_masks)):
+                if cameras:
+                    self.invalid_frame_cameras[frame_id].extend(cameras)
+                    logger.warning(f'{self.dir}: frame {frame_id} has a missing {kind} for camera(s) '
+                                   f'{", ".join(cameras)}; these frame/camera pairs are skipped.')
 
     def _set_scene_normalization(self):
         if self.scene_center_override is None:
@@ -120,6 +161,22 @@ class CalibratedSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
     @property
     def width_original(self) -> int:
         return next(iter(self.calibration.values())).width
+
+    def __getitem__(self, idx: int):
+        """Like the base class, skips to the next frame on a skippable error, but tries each frame
+        at most once and then raises instead of retrying forever."""
+        for attempt in range(len(self)):
+            frame_id = self.get_frameid((idx + attempt) % len(self))
+            try:
+                if 'ALL' in self.invalid_frame_cameras[frame_id]:
+                    raise data_util.SkippableError(f'Skipping known invalid frame {frame_id}')
+                camera_ids = self.sample_cameras_from_camera_angles(frame_id)
+                extra_camera_ids = self.get_extra_camera_ids(frame_id, avoid_camera_ids=camera_ids)
+                return self.fetch_data_from_disk(frame_id=frame_id, camera_ids=camera_ids,
+                                                 extra_camera_ids=extra_camera_ids)
+            except data_util.SkippableError as e:
+                logger.warning(f'{self.dir}: skipping frame {frame_id} for index {idx}: {e}')
+        raise RuntimeError(f'No loadable frame in {self.dir}: all {len(self)} frames were skipped')
 
     def get_frameid(self, idx: int) -> str:
         return self.frame_ids[idx]
