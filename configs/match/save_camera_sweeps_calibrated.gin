@@ -1,0 +1,87 @@
+# condor/run.py configs/match/save_camera_sweeps_calibrated.gin
+#
+# MATCH camera sweeps on a calibrated multi-view capture (dataset type `calibrated`), modeled on
+# save_camera_sweeps_quickstart.gin. Run TEMPEH first (configs/tempeh/save_predictions_calibrated.yml) with the same
+# capture, masks, nframes and frame_stride, then edit the paths below.
+#
+# Outputs in save_camera_sweeps.out_dir: <sample>_input.jpg (input grid), <sample>_pred.jpg (predicted renders of the
+# input views), <sample>_sweep.mp4.
+
+include 'assets/pretrained_models/match/uv_res_1024/config_0.gin'
+MODEL_PATH = 'assets/pretrained_models/match/uv_res_1024'
+CKPT = 860_000
+N_GPUS = 1
+
+# --- paths: the only values to edit ---
+CAPTURE_ROOT = 'data/captures/background 1'                   # capture folder (or a folder of capture folders)
+CAPTURE_MASK_DIR = 'data/captures/masks/background 1'         # foreground masks, same file names as images/
+CAPTURE_TEMPEH_DIR = 'data/tempeh_predictions/calibrated/calibrated'  # TEMPEH's <out_dir>/calibrated
+OUT_DIR = 'experiments/match/calibrated'
+
+NFRAMES = 1                # number of frames to predict for; -1: all
+CAPTURE_FRAME_STRIDE = 1
+
+# --- framing, tuned for 1024x1024 images, focal length ~2400 px, head ~1 m from the cameras ---
+# Resize 1024x1024 to 800x800 (aspect preserved), then the pretrained 640x512 head crop (HEAD_CROP_HEIGHT/WIDTH from
+# config_0.gin). At 800 a 200 mm head is ~375 px wide, as in Ava's 786x512 input; the head's mask fills ~72% of the
+# crop width (Ava: ~75%).
+CAPTURE_HEIGHT = 800
+CAPTURE_WIDTH = 800
+# The pretrained -64 compensates for Ava's head-pose point sitting low on the face. Here the crop is centered on the
+# point closest to all optical axes, which projects near the mouth/chin, and the raw images leave only ~70 px (of
+# 1024) above the hair in several views. With -64 the crop cut off the top of the head in cameras 10 and 11 (they
+# look up from below). -128 moves the crop up until it clamps at the image top in 11 of 12 views, which keeps the
+# whole head in every view of `background 1` (smallest margin above the hair: 14 px). Going further up changes
+# nothing, as the crop clamps rather than pads.
+CAPTURE_HEAD_CROP_OFFSET_Y = -128
+
+condor_name/join_strings.strings = ['.save_camera_sweeps-calibrated-', %CKPT]
+cmd/join_strings.strings = ['torchrun --standalone --nnodes=1 --nproc-per-node=', %N_GPUS, ' scripts/match/save_camera_sweeps.py --gin_configs __CONFIG__']
+
+save_camera_sweeps:
+  out_dir = %OUT_DIR
+
+Options:
+  load_pretrained_model = %MODEL_PATH
+  load_pretrained_model_ckpt = %CKPT
+
+  val_loader_params = [
+    {
+      'name': 'calibrated_val',
+      'cls': 'calibrated',
+      'kwargs': {
+        'dataloader_kwargs': {
+          'batch_size': %BATCH_SIZE,
+          'persistent_workers': True,
+          'num_workers': 2,
+        },
+        'dataset_kwargs': {
+          'nframes': %NFRAMES,
+          'root_path': %CAPTURE_ROOT,
+          'mask_directory': %CAPTURE_MASK_DIR,
+          'height': %CAPTURE_HEIGHT,
+          'width': %CAPTURE_WIDTH,
+          'camera_angles': %AVA_CAMERA_ANGLES,  # the pretrained model's 12 camera angles
+          'uv_directory': %CAPTURE_TEMPEH_DIR,
+          'coarse_mesh_directory': %CAPTURE_TEMPEH_DIR,
+          'frame_stride': %CAPTURE_FRAME_STRIDE,
+          'head_crop': %HEAD_CROP,
+          'head_crop_height': %HEAD_CROP_HEIGHT,
+          'head_crop_width': %HEAD_CROP_WIDTH,
+          'head_crop_offset_y': %CAPTURE_HEAD_CROP_OFFSET_Y,
+          'deterministic_shuffle': False,
+          'training': None,
+          'require_segmentation': False,
+          'require_verts': False,
+        }
+      }
+    },
+  ]
+
+CondorParameters:
+  njobs = 1
+  environment = {}
+  name = @condor_name/join_strings()
+  batch_name = @condor_name/join_strings()
+  cmd = @cmd/join_strings()
+  requirements = '(TARGET.CUDACapability >= 7.0)'
