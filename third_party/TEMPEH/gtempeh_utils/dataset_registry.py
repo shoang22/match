@@ -121,3 +121,19 @@ def uv_frame_fxfycxcy(batch, datasets):
         fxfycxcy[..., 2] * width + left,
         fxfycxcy[..., 3] * height + top,
     ], axis=-1).astype(np.float32)
+
+
+def uv_maps_in_input_boxes(uv_maps, boxes, height, width):
+    """The part of each full-image UV map that TEMPEH's (head-cropped) input covers, for display next to that input.
+
+    uv_maps: (V, H, W, 3) in [0, 1], rendered in the full image (see `uv_frame_fxfycxcy`).
+    boxes: (V, 4) left, top, right, bottom of each input in the full image, normalized (`crop_boxes_in_full_image`).
+    Returns (V, height, width, 3) in [0, 1]: each box cut out and resized (nearest neighbor), quantized to 8 bits.
+    """
+    from PIL import Image
+
+    uv_h, uv_w = uv_maps.shape[1:3]
+    return np.stack([
+        np.asarray(Image.fromarray(np.round(uv * 255).clip(0, 255).astype(np.uint8))
+                   .crop((l * uv_w, t * uv_h, r * uv_w, b * uv_h)).resize((width, height), Image.NEAREST))
+        for uv, (l, t, r, b) in zip(uv_maps, boxes)]) / 255.

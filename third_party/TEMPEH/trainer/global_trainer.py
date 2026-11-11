@@ -103,6 +103,7 @@ class Trainer(BaseTrainer):
 
     def register_dataset(self, init_full_dataset=False, process_idx=0, world_size=1):
         self.dataset_full = self.dataset_train = self.dataset_val = None
+        self.full_datasets = None
         self.dataloader_full = self.dataloader_train = self.dataloader_val = None
 
         if init_full_dataset:
@@ -355,11 +356,8 @@ class Trainer(BaseTrainer):
             uv_vis = uv_renders[ib, :nvis]
             if uv_fxfycxcy is not None:
                 # UV maps are in the full image: show the part covering TEMPEH's (head-cropped) input
-                uv_h, uv_w = uv_vis.shape[1:3]
-                uv_vis = np.stack([
-                    np.asarray(Image.fromarray(np.round(uv*255).clip(0, 255).astype(np.uint8))
-                               .crop((l*uv_w, t*uv_h, r*uv_w, b*uv_h)).resize(imgs_vis.shape[:-3:-1], Image.NEAREST))
-                    for uv, (l, t, r, b) in zip(uv_vis, input_boxes[ib, :nvis])]) / 255.
+                uv_vis = dataset_registry.uv_maps_in_input_boxes(uv_vis, input_boxes[ib, :nvis],
+                                                                 height=imgs_vis.shape[-2], width=imgs_vis.shape[-1])
             imgs_vis = torchvision.transforms.functional.resize(imgs_vis, uv_vis.shape[1:3])
             imgs_vis = einops.rearrange(imgs_vis, 'V C H W -> H (V W) C').cpu().numpy()
             uv_vis = einops.rearrange(uv_vis, 'V H W C -> H (V W) C')
