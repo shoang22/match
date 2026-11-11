@@ -12,6 +12,7 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
+import cv2
 import numpy as np
 from PIL import Image
 
@@ -63,6 +64,7 @@ class CalibratedSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
         self.scale_factor = scale_factor
         self.scene_center_override = scene_center
         self.scene_rotation_override = scene_rotation
+        self._undistort_maps = {}  # camera id -> (map_x, map_y), built on first use
         super().__init__(capture=capture, **kwargs)
         self._log_camera_slots()
 
@@ -148,11 +150,12 @@ class CalibratedSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
         self.SCENE_CENTER = (self.scale_factor * rotation @ self.head_center).astype(np.float32)
 
     def get_krt_dict(self):
+        """Images are undistorted at load time (`to_pinhole`), so the reported distortion is zero."""
         krt = {}
         for cam, c in self.calibration.items():
             intrin = c.K.copy()
             intrin[:2, 2] += 0.5  # OpenCV puts the top-left pixel center at 0, MATCH at 0.5
-            krt[cam] = dict(intrin=intrin, extrin=c.extrin, dist=c.dist)
+            krt[cam] = dict(intrin=intrin, extrin=c.extrin, dist=np.zeros(5))
         return krt
 
     @property
@@ -226,12 +229,25 @@ class CalibratedSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
         return None  # no Sapiens part maps; configs set require_segmentation=False
 
     def to_pinhole(self, image: np.ndarray, camera_id: str) -> np.ndarray:
-        """Maps a raw native-size image or mask to the calibration's pinhole camera.
+        """Undistorts a raw native-size image or mask into the calibration's pinhole camera.
 
-        Runs before the base class's resize. Distortion is not removed yet, so
-        this returns the input unchanged.
+        Runs before the base class's resize. The output keeps the native size and
+        the calibration's K, so the intrinsics are unchanged. Bilinear for images
+        and (possibly soft) masks alike, with the same per-camera maps, so the two
+        stay pixel-aligned. Pixels that map from outside the image are black.
         """
-        return image
+        map_x, map_y = self._undistort_map(camera_id)
+        undistorted = cv2.remap(image, map_x, map_y, interpolation=cv2.INTER_LINEAR,
+                                borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+        return undistorted.reshape(image.shape)  # cv2 drops a trailing channel axis of size 1
+
+    def _undistort_map(self, camera_id: str):
+        if camera_id not in self._undistort_maps:
+            c = self.calibration[camera_id]
+            # OpenCV pixel convention on both sides: build from the calibration's raw K
+            self._undistort_maps[camera_id] = cv2.initUndistortRectifyMap(
+                c.K, c.dist, None, c.K, (c.width, c.height), cv2.CV_32FC1)
+        return self._undistort_maps[camera_id]
 
     def _check_native_size(self, image: np.ndarray, path: Path) -> np.ndarray:
         if image.shape[:2] != (self.height_original, self.width_original):
