@@ -9,6 +9,9 @@ OUTPUT_DIR, with the same filename:
   - 255 where the predicted class is anything other than Background, 0 where it
     is Background.
 
+Images are read as sRGB (no gamma correction) and letterboxed into the model's
+1024x768 input, so square captures are not squashed.
+
 Write the masks to their own folder (e.g. next to, not inside, the real mask
 folder). Switching the dataset config from these to the real masks later only
 changes the mask folder path.
@@ -61,9 +64,10 @@ def foreground_mask(class_map):
 class SapiensSegmenter:
     """Runs a Sapiens segmentation module on raw RGB images.
 
-    Preprocessing matches third_party/sapiens/lite/demo (resize to the model's
-    input shape, Sapiens mean/std); logits are upsampled back to each image's
-    raw size before the argmax, so class maps are in raw image space.
+    Preprocessing follows third_party/sapiens/lite/demo: letterbox into the
+    model's input shape (keeping the aspect ratio), RGB, Sapiens mean/std. The
+    logits of the image region are upsampled back to each image's raw size
+    before the argmax, so class maps are in raw image space.
     """
 
     MEAN = (123.5, 116.5, 103.5)
@@ -77,12 +81,29 @@ class SapiensSegmenter:
         self.device = device
         self.dtype = dtype if dtype is not None else torch.bfloat16
 
-    def _preprocess(self, rgb):
+    def _letterbox(self, rgb):
+        """Fits the image into the input shape at its own aspect ratio, black-padded.
+
+        Same as Sapiens' `pad=True` preprocessing (zip_image_dataset.py): pads are
+        rounded down to multiples of 16. Returns the padded image and the
+        (top, left, height, width) box the image occupies.
+        """
+        in_h, in_w = self.input_shape
+        h, w = rgb.shape[:2]
+        scale = min(in_h / h, in_w / w)
+        new_h, new_w = int(round(h * scale)), int(round(w * scale))
+        top = int(((in_h - new_h) / 2 // 16) * 16)
+        left = int(((in_w - new_w) / 2 // 16) * 16)
+        padded = np.zeros((in_h, in_w, 3), dtype=np.uint8)
+        padded[top : top + new_h, left : left + new_w] = cv2.resize(
+            rgb, (new_w, new_h), interpolation=cv2.INTER_LINEAR
+        )
+        return padded, (top, left, new_h, new_w)
+
+    def _normalize(self, rgb):
         import torch
 
-        h, w = self.input_shape
-        img = cv2.resize(rgb, (w, h), interpolation=cv2.INTER_LINEAR)
-        img = torch.from_numpy(img).permute(2, 0, 1).float()
+        img = torch.from_numpy(rgb).permute(2, 0, 1).float()
         mean = torch.tensor(self.MEAN).view(3, 1, 1)
         std = torch.tensor(self.STD).view(3, 1, 1)
         return (img - mean) / std
@@ -91,12 +112,15 @@ class SapiensSegmenter:
         import torch
         import torch.nn.functional as F
 
-        batch = torch.stack([self._preprocess(img) for img in images])
+        padded, boxes = zip(*(self._letterbox(img) for img in images))
+        batch = torch.stack([self._normalize(p) for p in padded])
         with torch.no_grad():
             logits = self.model(batch.to(self.device, self.dtype)).float().cpu()
+        logits = F.interpolate(logits, size=self.input_shape, mode="bilinear")
         class_maps = []
-        for img, img_logits in zip(images, logits):
-            up = F.interpolate(img_logits[None], size=img.shape[:2], mode="bilinear")
+        for img, img_logits, (top, left, h, w) in zip(images, logits, boxes):
+            crop = img_logits[None, :, top : top + h, left : left + w]
+            up = F.interpolate(crop, size=img.shape[:2], mode="bilinear")
             class_maps.append(up[0].argmax(dim=0).numpy())
         return class_maps
 
@@ -227,7 +251,7 @@ def main(argv=None):
     parser.add_argument("--batch-size", type=int, default=4, help="images per forward pass")
     parser.add_argument(
         "--shape", type=int, nargs=2, default=[1024, 768], metavar=("H", "W"),
-        help="model input size (default: 1024 768, as in the Sapiens demos)",
+        help="model input size; images are letterboxed into it (default: 1024 768)",
     )
     parser.add_argument(
         "--contact-sheet-frame", type=int, default=None, metavar="N",
