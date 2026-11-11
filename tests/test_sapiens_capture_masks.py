@@ -261,3 +261,16 @@ def test_capture_without_matching_images_is_an_error(tmp_path):
 
     with pytest.raises(FileNotFoundError, match="frame"):
         capture_masks.generate_masks(capture, tmp_path / "masks", _striped_segmenter([0]))
+
+
+def test_masks_are_written_for_every_image_name_the_dataset_accepts(tmp_path):
+    # The calibrated dataset reads frame<digits>_cam<digits>.png, with any number of digits
+    images = tmp_path / "capture" / "images"
+    images.mkdir(parents=True)
+    names = ["frame0_cam1.png", "frame12_cam0003.png", "frame0000007_cam12.png"]
+    for name in names:
+        Image.fromarray(np.zeros((6, 8, 3), np.uint8)).save(images / name)
+
+    capture_masks.generate_masks(images.parent, tmp_path / "masks", _striped_segmenter([0, 1]))
+
+    assert sorted(p.name for p in (tmp_path / "masks").glob("*.png")) == sorted(names)

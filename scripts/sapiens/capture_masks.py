@@ -1,7 +1,7 @@
 """Interim foreground masks for a calibrated multi-view capture, from Sapiens.
 
 Runs the Sapiens 1B Goliath segmentation checkpoint over a capture's raw images
-(CAPTURE_DIR/images/frame{FFFFFF}_cam{CCC}.png) and writes one mask per image to
+(CAPTURE_DIR/images/frame{FFFFFF}_cam{CCC}.png; any digit count is accepted) and writes one mask per image to
 OUTPUT_DIR, with the same filename:
 
   - single-channel 8-bit PNG, same size as the raw image (no undistortion, no
@@ -40,7 +40,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-IMAGE_NAME = re.compile(r"^frame(\d{6})_cam(\d{3})\.png$")
+# Same as IMAGE_NAME_PATTERN in match/data/calibrated_capture_dataset.py; this script runs in the
+# sapiens_lite env, which has no `match`, so the pattern is copied rather than imported.
+IMAGE_NAME = re.compile(r"^frame(\d+)_cam(\d+)\.png$")
 BACKGROUND_CLASS = 0  # index of "Background" in Sapiens' GOLIATH_CLASSES
 
 
@@ -48,7 +50,7 @@ def _capture_images(capture_dir):
     images_dir = Path(capture_dir) / "images"
     paths = sorted(p for p in images_dir.iterdir() if IMAGE_NAME.match(p.name))
     if not paths:
-        raise FileNotFoundError(f"no frame{{FFFFFF}}_cam{{CCC}}.png images in {images_dir}")
+        raise FileNotFoundError(f"no frame<N>_cam<N>.png images in {images_dir}")
     return paths
 
 
