@@ -42,7 +42,8 @@ def parse_args(argv):
     parser.add_argument('--width', type=int, default=800)
     parser.add_argument('--crop-height', type=int, default=640)
     parser.add_argument('--crop-width', type=int, default=512)
-    parser.add_argument('--crop-offset-y', type=int, default=-64)
+    parser.add_argument('--crop-offset-y', type=int, default=-128,
+                        help='as in configs/match/save_camera_sweeps_calibrated.gin')
     parser.add_argument('--crop-offset-x', type=int, default=0)
     parser.add_argument('--no-crop', action='store_true')
     parser.add_argument('--scene-center', type=float, nargs=3, default=None,
