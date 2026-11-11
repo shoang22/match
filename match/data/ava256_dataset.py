@@ -82,6 +82,7 @@ class AvaSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
 
     SCALE_FACTOR = np.array(1./1000, dtype=np.float32)  # converting geometry from mm to m
     SCENE_CENTER = np.array([-0.0604,  0.0295,  0.9933], dtype=np.float32)
+    DATASET_TYPE = 'ava-256'
 
 
     def __init__(self, sapiens_segmentation_directory:str ='', **kwargs):
