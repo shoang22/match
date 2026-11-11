@@ -147,3 +147,140 @@ def test_predictions_return_to_the_frame_given_by_each_samples_scene_fields():
 
     np.testing.assert_allclose(points[0], [[0.1, 0.2, 0.3]], atol=1e-6)
     np.testing.assert_allclose(points[1], [[10., -20., 1000.]], atol=1e-3)
+
+
+# --- calibrated captures (`calibrated`): no Ava-256 root, framing from the spec ---
+
+import synthetic_capture as synth  # noqa: E402
+
+
+def calibrated_spec(capture, **overrides):
+    """A TEMPEH `--datasets` entry for a calibrated capture, head-cropped like TEMPEH's Ava input."""
+    spec = dict(type='calibrated', root_path=str(capture.root), mask_directory=str(capture.mask_dir),
+                camera_angles=synth.AVA_CAMERA_ANGLES, height=128, width=160,
+                head_crop=True, head_crop_height=96, head_crop_width=63, head_crop_offset_y=0, frame_stride=1)
+    spec.update(overrides)
+    return spec
+
+
+@pytest.fixture
+def capture(tmp_path):
+    return synth.write_capture(tmp_path / 'capture 1', tmp_path / 'masks', nframes=1)
+
+
+def test_a_calibrated_capture_alone_is_routed_to_the_calibrated_folder(capture, tmp_path):
+    specs = dataset_registry.dataset_specs_from_args(legacy_args(
+        dataset_directory='does/not/exist', datasets=repr([calibrated_spec(capture)])))
+    datasets = dataset_registry.build_datasets(specs)
+    batch = first_batch(datasets)
+
+    out_dirs = dataset_registry.sample_output_dirs(batch, datasets, tmp_path / 'out')
+
+    assert out_dirs == [tmp_path / 'out' / 'calibrated' / 'capture 1' / 'capture 1' / '000000']
+    assert tuple(batch['image'].shape[-3:]) == (3, 96, 63)
+
+
+def test_calibrated_predictions_return_to_calibration_units(capture):
+    batch = first_batch(dataset_registry.build_datasets([calibrated_spec(capture)]))
+    # TEMPEH's volume is centered at the normalized origin, which is the capture's head center
+    tempeh_mm = np.array([[[0., 0., 0.], [100., 0., 0.]]], dtype=np.float32)
+
+    points = dataset_registry.to_dataset_frame(tempeh_mm, batch)
+
+    np.testing.assert_allclose(points[0, 0], synth.HEAD_CENTER_MM, atol=0.5)
+    np.testing.assert_allclose(np.linalg.norm(points[0, 1] - points[0, 0]), 100., atol=1e-3)
+
+
+def normalized_projection(c2w, fxfycxcy, points):
+    """Projection of world points to image coordinates in [0, 1] (top-left image corner at 0)."""
+    w2c = np.linalg.inv(np.asarray(c2w, dtype=np.float64))
+    fx, fy, cx, cy = np.asarray(fxfycxcy, dtype=np.float64)
+    cam = (w2c[:3, :3] @ np.asarray(points, dtype=np.float64).T).T + w2c[:3, 3]
+    return np.stack([fx * cam[:, 0] / cam[:, 2] + cx, fy * cam[:, 1] / cam[:, 2] + cy], axis=-1)
+
+
+def test_uv_maps_of_head_cropped_samples_are_framed_like_the_full_image(capture):
+    # MATCH resizes a loaded UV map to the full (uncropped) image before its own head crop, so the UV maps of a
+    # head-cropped TEMPEH input must be rendered with the intrinsics of the full image.
+    datasets = dataset_registry.build_datasets([calibrated_spec(capture)])
+    batch = first_batch(datasets)
+
+    fxfycxcy = dataset_registry.uv_frame_fxfycxcy(batch, datasets)
+
+    markers = (synth.MARKERS_MM - synth.HEAD_CENTER_MM) / 1000.  # normalized world: m, head at the origin
+    for view, camera in enumerate(batch['camera'][0].tolist()):
+        expected = (capture.cameras[camera].project(synth.MARKERS_MM) + 0.5) / [synth.NATIVE_WIDTH, synth.NATIVE_HEIGHT]
+        got = normalized_projection(batch['C2W'][0, view], fxfycxcy[0, view], markers)
+        np.testing.assert_allclose(got, expected, atol=1e-3)  # 1e-3 of the image size
+
+
+def test_uncropped_samples_keep_uv_maps_in_the_tempeh_input_frame(capture):
+    datasets = dataset_registry.build_datasets([calibrated_spec(capture, head_crop=False)])
+    batch = first_batch(datasets)
+
+    assert dataset_registry.uv_frame_fxfycxcy(batch, datasets) is None
+
+
+CALIBRATED_CONFIG = REPO_ROOT / 'configs' / 'tempeh' / 'save_predictions_calibrated.yml'
+
+
+def parse_shipped_config(config_path, monkeypatch, **paths):
+    """TEMPEH's options as `condor/run.py <config>` produces them, with the config's paths replaced."""
+    import shlex
+    from omegaconf import OmegaConf
+    from option_handler.train_options_global import TrainOptions
+    cfg = OmegaConf.load(config_path)
+    for key, value in paths.items():
+        assert key in cfg, key
+        cfg[key] = value
+    argv = shlex.split(cfg.CondorParameters.cmd)  # the command runs through bash
+    monkeypatch.setattr(sys, 'argv', argv[1:])
+    return argv, TrainOptions().parse()
+
+
+def test_shipped_calibrated_config_runs_on_a_capture_alone_once_its_paths_are_edited(capture, tmp_path, monkeypatch):
+    argv, args = parse_shipped_config(
+        CALIBRATED_CONFIG, monkeypatch,
+        data_dir=str(capture.root), mask_dir=str(capture.mask_dir), out_dir=str(tmp_path / 'out dir'))
+    assert argv[1] == 'scripts/tempeh/save_predictions.py'
+    assert args.outpath == str(tmp_path / 'out dir')
+
+    specs = dataset_registry.dataset_specs_from_args(args)
+
+    assert [s['type'] for s in specs] == ['calibrated']  # no Ava-256 dataset
+    spec = specs[0]
+    assert spec['root_path'] == str(capture.root)
+    assert spec['mask_directory'] == str(capture.mask_dir)
+    assert spec['camera_angles'] == synth.AVA_CAMERA_ANGLES
+    # TEMPEH's input: a head crop with Ava's aspect ratio, at TEMPEH's 256x167 input size
+    assert spec['head_crop'] is True
+    assert (spec['head_crop_height'], spec['head_crop_width']) == (256, 167)
+    assert spec['height'] == spec['width']  # the capture's native aspect ratio is 1:1
+    # UV maps in the full image, at the capture's native aspect ratio
+    assert args.uv_out_height == args.uv_out_width
+
+
+def test_shipped_calibrated_config_frames_tempeh_input_at_avas_head_scale(monkeypatch):
+    # A 200 mm head is ~121 px wide in Ava's 256x167 TEMPEH input; on the target capture (focal ~2400 px, head
+    # ~1 m away, 1024 px images) it is ~480 px wide at native resolution.
+    _, args = parse_shipped_config(CALIBRATED_CONFIG, monkeypatch)
+    spec = dataset_registry.dataset_specs_from_args(args)[0]
+
+    head_px = 480 * spec['width'] / 1024
+    assert 105 <= head_px <= 135
+
+
+def test_crop_boxes_place_the_tempeh_input_inside_the_full_image(capture):
+    # e.g. to show UV maps rendered in the full image next to TEMPEH's head-cropped input
+    datasets = dataset_registry.build_datasets([calibrated_spec(capture)])
+    batch = first_batch(datasets)
+
+    boxes = dataset_registry.crop_boxes_in_full_image(batch, datasets)
+
+    markers = (synth.MARKERS_MM - synth.HEAD_CENTER_MM) / 1000.
+    for view, camera in enumerate(batch['camera'][0].tolist()):
+        expected = (capture.cameras[camera].project(synth.MARKERS_MM) + 0.5) / [synth.NATIVE_WIDTH, synth.NATIVE_HEIGHT]
+        in_crop = normalized_projection(batch['C2W'][0, view], batch['fxfycxcy'][0, view], markers)
+        left, top, right, bottom = boxes[0, view]
+        got = [left, top] + in_crop * [right - left, bottom - top]
+        np.testing.assert_allclose(got, expected, atol=1e-3)
