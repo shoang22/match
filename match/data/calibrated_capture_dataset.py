@@ -52,6 +52,7 @@ class CalibratedSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
             subject's left, y down, z toward the back of the head). Identity by default.
     """
 
+    DATASET_TYPE = 'calibrated'
     NUM_VERTS = 5741  # same as the Ava-256 dataset, so batches can mix both
 
     def __init__(self, capture: CalibratedCapture, scale_factor: float = 1 / 1000,

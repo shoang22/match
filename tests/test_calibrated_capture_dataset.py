@@ -54,6 +54,11 @@ def capture(tmp_path):
     return synth.write_capture(tmp_path / 'capture 1', tmp_path / 'masks', nframes=3)
 
 
+def test_the_dataset_names_its_prediction_output_folder_after_its_type(capture):
+    # TEMPEH's save_predictions writes each sample under <out>/<DATASET_TYPE>/...
+    assert build_dataset(capture).DATASET_TYPE == DATASET_NAME
+
+
 def test_length_equals_number_of_frames(capture):
     assert len(build_dataset(capture)) == 3
 
