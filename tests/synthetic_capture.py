@@ -6,7 +6,8 @@ through a known head center. All values here are ground truth, chosen
 independently of the dataset code.
 
 Pixel convention on disk: OpenCV, i.e. the center of the top-left pixel is at
-(0, 0).
+(0, 0). Images and masks are what a real lens records: markers sit at the
+*distorted* projections of their 3D points.
 """
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,8 +27,9 @@ RIG_DISTANCES_MM = [966, 1028, 1047, 1146, 1181, 1100, 1123, 952, 965, 944, 891,
 HEAD_CENTER_MM = np.array([-17.0, 4.0, 966.0])
 NATIVE_WIDTH = 200
 NATIVE_HEIGHT = 160
-# The red, green and blue image markers, in calibration units (mm).
-MARKERS_MM = HEAD_CENTER_MM + np.array([[30.0, -20.0, -40.0], [-40.0, 30.0, 10.0], [10.0, 45.0, -60.0]])
+# The red, green and blue image markers, in calibration units (mm). Far enough from the head
+# center (where the optical axes meet) that lens distortion moves them by 0.2 to 2.4 px.
+MARKERS_MM = HEAD_CENTER_MM + np.array([[60.0, -45.0, -40.0], [-65.0, 40.0, 10.0], [15.0, 70.0, -60.0]])
 MARKER_SIGMA_PX = 1.5
 
 # The pretrained MATCH model's 12 target angles [az, el].
@@ -41,15 +43,32 @@ class SyntheticCamera:
     R: np.ndarray       # world -> camera rotation
     t: np.ndarray       # world -> camera translation (mm)
     aspect_ratio: float
+    dist: np.ndarray    # OpenCV k1, k2, p1, p2, k3
 
     @property
     def center(self):
         return -self.R.T @ self.t
 
     def project(self, points_mm):
+        """Pinhole projection, ignoring lens distortion."""
+        return self._to_pixels(self._normalized(points_mm))
+
+    def project_distorted(self, points_mm):
+        """Where the lens actually images the points: OpenCV's 5-coefficient model."""
+        x, y = self._normalized(points_mm).T
+        k1, k2, p1, p2, k3 = self.dist
+        r2 = x * x + y * y
+        radial = 1 + k1 * r2 + k2 * r2 ** 2 + k3 * r2 ** 3
+        xd = x * radial + 2 * p1 * x * y + p2 * (r2 + 2 * x * x)
+        yd = y * radial + p1 * (r2 + 2 * y * y) + 2 * p2 * x * y
+        return self._to_pixels(np.stack([xd, yd], axis=-1))
+
+    def _normalized(self, points_mm):
         cam = (self.R @ np.asarray(points_mm, dtype=np.float64).T).T + self.t
-        uvw = (self.K @ cam.T).T
-        return uvw[:, :2] / uvw[:, 2:]
+        return cam[:, :2] / cam[:, 2:]
+
+    def _to_pixels(self, xy):
+        return (self.K[:2, :2] @ xy.T).T + self.K[:2, 2]
 
 
 @dataclass
@@ -78,7 +97,9 @@ def make_rig(skew_camera=None):
         v0 = NATIVE_HEIGHT / 2 + 4 * (i % 4 - 1.5)
         skew = 1.5 if i == skew_camera else 0.0
         K = np.array([[fu, skew, u0], [0, fu * ar, v0], [0, 0, 1]])
-        cameras[i] = SyntheticCamera(K=K, R=R, t=t, aspect_ratio=ar)
+        # Strong barrel distortion that differs per camera; still monotonic out to the image corners.
+        dist = np.array([-4.0 - 0.3 * (i % 3), 25.0 + 2 * (i % 4), 0.01 * (i % 3 - 1), -0.008 * (i % 2), 10.0])
+        cameras[i] = SyntheticCamera(K=K, R=R, t=t, aspect_ratio=ar, dist=dist)
     return cameras
 
 
@@ -89,7 +110,7 @@ def write_calibration(path, cameras):
         cam = cameras[i]
         qx, qy, qz, qw = Rotation.from_matrix(cam.R).as_quat()
         values = [cam.K[0, 0], cam.K[0, 2], cam.K[1, 2], cam.aspect_ratio, cam.K[0, 1],
-                  0, 0, 0, 0, 0,
+                  *cam.dist,
                   qw, qx, qy, qz, *cam.t]
         lines.append(' '.join(f'{v:.9f}' for v in values) + f' {NATIVE_WIDTH} {NATIVE_HEIGHT}')
     Path(path).write_text('\n'.join(lines) + '\n')
@@ -102,14 +123,14 @@ def gaussian_blob(center_xy, sigma=MARKER_SIGMA_PX):
 
 
 def marker_image(camera):
-    uv = camera.project(MARKERS_MM)
+    uv = camera.project_distorted(MARKERS_MM)
     img = np.stack([gaussian_blob(p) for p in uv], axis=-1) * 255
     return np.round(img).astype(np.uint8)
 
 
 def marker_mask(camera, mode):
     """Mask containing only the red marker, in one of several file formats."""
-    blob = gaussian_blob(camera.project(MARKERS_MM[:1])[0])
+    blob = gaussian_blob(camera.project_distorted(MARKERS_MM[:1])[0])
     channel, kind = mode.split('-')
     first = np.round(blob * 255) if kind == 'soft' else np.where(blob > 0.2, 255, 0)
     first = first.astype(np.uint8)
