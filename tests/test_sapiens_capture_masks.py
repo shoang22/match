@@ -169,7 +169,10 @@ def test_contact_sheet_is_not_written_unless_requested(tmp_path):
 
 
 def _export_fake_checkpoint(path):
-    """A torch.export'ed module with Sapiens' segmentation I/O, saved like the .pt2."""
+    """A torch.export'ed module with Sapiens' segmentation I/O, saved like the .pt2.
+
+    Like the real sapiens_1b seg .pt2, it declares a dynamic batch dimension (2..32).
+    """
     import torch
 
     class RedIsHair(torch.nn.Module):
@@ -180,7 +183,7 @@ def _export_fake_checkpoint(path):
             return torch.cat([others[:, :HAIR], red, others[:, HAIR:]], dim=1)
 
     example = (torch.zeros(2, 3, 64, 48),)
-    batch = {0: torch.export.Dim("batch", max=64)}
+    batch = {0: torch.export.Dim("batch", min=2, max=32)}
     exported = torch.export.export(RedIsHair(), example, dynamic_shapes=(batch,))
     torch.export.save(exported, str(path))
 
@@ -199,6 +202,7 @@ def test_cli_writes_masks_and_contact_sheet_for_capture_with_space_in_name(tmp_p
             sys.executable, str(SCRIPT), str(capture), str(out),
             "--checkpoint", str(checkpoint), "--device", "cpu",
             "--shape", "64", "48", "--contact-sheet-frame", "1",
+            "--batch-size", "4",  # 6 images: the last batch holds 2
         ],
         check=True,
     )
@@ -219,3 +223,4 @@ def test_help_documents_usage():
     for expected in ["sapiens_lite", "capture_dir", "output_dir", "--contact-sheet-frame",
                      "Background", "frame{FFFFFF}_cam{CCC}.png"]:
         assert expected in result.stdout
+
