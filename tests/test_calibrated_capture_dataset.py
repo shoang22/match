@@ -3,6 +3,8 @@
 Every test builds the dataset from config kwargs through MATCH's registry, then
 uses only `len()` and indexing. CPU-only; the capture is synthesized on disk.
 """
+import logging
+import re
 from pathlib import Path
 
 import numpy as np
@@ -54,6 +56,71 @@ def capture(tmp_path):
 
 def test_length_equals_number_of_frames(capture):
     assert len(build_dataset(capture)) == 3
+
+
+def test_number_of_frames_and_frame_stride_are_configurable(tmp_path):
+    capture = synth.write_capture(tmp_path / 'capture', tmp_path / 'masks', nframes=5)
+    dataset = build_dataset(capture, frame_stride=2, nframes=2)
+    assert len(dataset) == 2
+    assert [dataset[i]['frame'] for i in range(2)] == ['000000', '000002']
+
+
+def test_frames_missing_an_image_or_a_mask_are_flagged_and_skipped(tmp_path, caplog):
+    capture = synth.write_capture(tmp_path / 'capture', tmp_path / 'masks', nframes=3,
+                                  missing_images={(1, 4)}, missing_masks={(2, 7)})
+    with caplog.at_level(logging.WARNING):
+        dataset = build_dataset(capture)
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any(re.search(r'frame 000001.*missing image.*camera.*\b4\b', w) for w in warnings), warnings
+    assert any(re.search(r'frame 000002.*missing mask.*camera.*\b7\b', w) for w in warnings), warnings
+
+    assert len(dataset) == 3
+    # 12 cameras for 12 angles: frames 1 and 2 cannot be used, so indexing moves on to frame 0
+    assert dataset[1]['frame'] == '000000'
+    assert dataset[2]['frame'] == '000000'
+
+
+def test_indexing_raises_instead_of_retrying_forever_when_no_frame_is_loadable(tmp_path):
+    capture = synth.write_capture(tmp_path / 'capture', tmp_path / 'masks', nframes=2,
+                                  missing_masks={(0, 0), (1, 0)})
+    dataset = build_dataset(capture)
+    with pytest.raises(RuntimeError, match='No loadable frame'):
+        dataset[0]
+
+
+SLOT_LINE = re.compile(r'camera (\d+) -> slot (\d+) \[az (-?[\d.]+), el (-?[\d.]+)\], angular error ([\d.]+) deg')
+
+
+def test_each_cameras_angle_slot_and_error_are_logged_once_per_capture(capture, caplog):
+    with caplog.at_level(logging.INFO):
+        dataset = build_dataset(capture)
+        dataset[0]
+        dataset[1]
+    assignments = [SLOT_LINE.search(line).groups()
+                   for record in caplog.records for line in record.getMessage().splitlines()
+                   if SLOT_LINE.search(line)]
+    assert sorted(int(a[0]) for a in assignments) == list(range(12))
+    by_camera = {int(a[0]): a for a in assignments}
+    # The rig puts camera 0 at (az 1.0, el 0.2) and camera 1 at (az 19.7, el 0.5), next to the
+    # [0, 0] and [20, 0] slots: about 1.02 and 0.58 degrees away.
+    assert by_camera[0][2:4] == ('0', '0') and float(by_camera[0][4]) == pytest.approx(1.02, abs=0.05)
+    assert by_camera[1][2:4] == ('20', '0') and float(by_camera[1][4]) == pytest.approx(0.58, abs=0.05)
+
+
+def test_subfolders_with_a_calibration_file_are_captures_named_after_their_folder(tmp_path):
+    root, masks = tmp_path / 'root', tmp_path / 'masks'
+    synth.write_capture(root / 'background 1', masks / 'background 1', nframes=2)
+    synth.write_capture(root / 'take2', masks / 'take2', nframes=1)
+    (root / 'notes').mkdir()
+    capture = synth.SyntheticCapture(root=root, mask_dir=masks)
+
+    dataset = build_dataset(capture)
+    assert len(dataset) == 3
+    assert [(s['subject'], s['sequence']) for s in (dataset[0], dataset[2])] == [
+        ('background 1', 'background 1'), ('take2', 'take2')]
+
+    overridden = build_dataset(capture, subject_id='S01', sequence_id='outdoor')[0]
+    assert (overridden['subject'], overridden['sequence']) == ('S01', 'outdoor')
 
 
 def test_building_without_a_mask_folder_raises_a_clear_error(capture):

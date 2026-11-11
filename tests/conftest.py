@@ -15,7 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 os.chdir(REPO_ROOT)
 
-TEST_TIMEOUT_S = 300
+TEST_TIMEOUT_S = 60
 
 
 @pytest.fixture(autouse=True)
