@@ -136,6 +136,10 @@ def marker_mask(camera, mode):
     first = first.astype(np.uint8)
     if channel == 'L':
         return Image.fromarray(first, mode='L')
+    if channel == 'P':  # palette indices 0/1; the palette maps index 1 to white
+        mask = Image.fromarray((first > 127).astype(np.uint8)).convert('P')
+        mask.putpalette([0, 0, 0, 255, 255, 255])
+        return mask
     other = np.full_like(first, 255)  # other channels differ from the first one on purpose
     return Image.fromarray(np.stack([first, other, 255 - first], axis=-1), mode='RGB')
 
