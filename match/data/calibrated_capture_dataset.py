@@ -57,6 +57,8 @@ class CalibratedSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
     NUM_VERTS = 5741  # same as the Ava-256 dataset, so batches can mix both
     # A missing TEMPEH UV map skips the frame rather than feeding MATCH zeros
     ZERO_FILL_MISSING_UV = False
+    # Indexing gives up with a RuntimeError once every frame has been skipped, instead of retrying forever
+    BOUNDED_RETRIES = True
 
     def __init__(self, capture: CalibratedCapture, scale_factor: float = 1 / 1000,
                  scene_center: list | None = None, scene_rotation: list | None = None, **kwargs):
@@ -167,22 +169,6 @@ class CalibratedSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
     @property
     def width_original(self) -> int:
         return next(iter(self.calibration.values())).width
-
-    def __getitem__(self, idx: int):
-        """Like the base class, skips to the next frame on a skippable error, but tries each frame
-        at most once and then raises instead of retrying forever."""
-        for attempt in range(len(self)):
-            frame_id = self.get_frameid((idx + attempt) % len(self))
-            try:
-                if 'ALL' in self.invalid_frame_cameras[frame_id]:
-                    raise data_util.SkippableError(f'Skipping known invalid frame {frame_id}')
-                camera_ids = self.sample_cameras_from_camera_angles(frame_id)
-                extra_camera_ids = self.get_extra_camera_ids(frame_id, avoid_camera_ids=camera_ids)
-                return self.fetch_data_from_disk(frame_id=frame_id, camera_ids=camera_ids,
-                                                 extra_camera_ids=extra_camera_ids)
-            except data_util.SkippableError as e:
-                logger.warning(f'{self.dir}: skipping frame {frame_id} for index {idx}: {e}')
-        raise RuntimeError(f'No loadable frame in {self.dir}: all {len(self)} frames were skipped')
 
     def get_frameid(self, idx: int) -> str:
         return self.frame_ids[idx]

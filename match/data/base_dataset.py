@@ -83,6 +83,10 @@ class BaseSingleCaptureDataset(torch.utils.data.Dataset):
     # the error propagates; a missing file marks the frame/camera invalid and the sample is skipped.
     ZERO_FILL_MISSING_UV: bool = True
 
+    # Indexing skips to the next frame on a SkippableError. When False, it retries forever (Ava, NeRSemble).
+    # When True, it tries each frame at most once and then raises a RuntimeError instead of hanging.
+    BOUNDED_RETRIES: bool = False
+
     PER_VIEW_KEYS = ['C2W', 'fxfycxcy', 'image', 'uv', 'sg_parts', 'mask', 'camera', 'bboxs']
 
 
@@ -481,7 +485,7 @@ class BaseSingleCaptureDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx: int) -> Optional[Dict[str, Union[np.ndarray, int, str]]]:
         exception_counter = 0
-        while True:
+        while not self.BOUNDED_RETRIES or exception_counter < len(self):
             try:
                 frame_id = self.get_frameid((idx+exception_counter) % len(self))
                 if 'ALL' in self.invalid_frame_cameras[frame_id]:
@@ -491,8 +495,9 @@ class BaseSingleCaptureDataset(torch.utils.data.Dataset):
                 return self.fetch_data_from_disk(frame_id=frame_id, camera_ids=camera_ids, extra_camera_ids=extra_camera_ids)
             except data_util.SkippableError as e:
                 logging.warning(f'Skippable error in loading sample {self.dir} {frame_id} {idx+exception_counter} ({exception_counter} Retries):\n{e}\nRetrying next sample ...')
-                exception_counter += 1                
-    
+                exception_counter += 1
+        raise RuntimeError(f'No loadable frame in {self.dir}: all {len(self)} frames were skipped')
+
     def get_image_path(self, frame_id:str, camera_id:str):
         raise NotImplementedError
 
