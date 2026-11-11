@@ -292,8 +292,8 @@ def test_mask_markers_coincide_with_image_markers(sample):
         np.testing.assert_allclose(centroid(sample['mask'][view, 0]), centroid(sample['image'][view, 0]), atol=1.0)
 
 
-@pytest.mark.parametrize('mask_mode', ['L-soft', 'L-binary', 'RGB-soft', 'RGB-binary'])
-def test_single_channel_and_rgb_masks_binary_or_soft_are_accepted(tmp_path, mask_mode):
+@pytest.mark.parametrize('mask_mode', ['L-soft', 'L-binary', 'RGB-soft', 'RGB-binary', 'P-binary'])
+def test_single_channel_rgb_and_palette_masks_binary_or_soft_are_accepted(tmp_path, mask_mode):
     capture = synth.write_capture(tmp_path / 'capture', tmp_path / 'masks', nframes=1, mask_mode=mask_mode)
     sample = build_dataset(capture)[0]
     mask = sample['mask'].numpy()

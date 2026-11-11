@@ -216,12 +216,17 @@ class CalibratedSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
         return self.to_pinhole(self._check_native_size(img, path), camera_id)
 
     def load_fg_mask(self, frame_id: str, camera_id: str) -> np.ndarray:
-        """uint8 HxWx1, 0..255. Uses the first channel of multi-channel masks."""
+        """uint8 HxWx1, 0..255. Uses the first channel of multi-channel masks.
+
+        Bilevel and palette masks are first converted to RGB, so the first channel holds
+        the displayed intensity rather than a palette index. Masks with more than 8 bits
+        per channel are rejected.
+        """
         path = self.mask_path(frame_id, camera_id)
         if not path.is_file():
             raise FileNotFoundError(f'Missing foreground mask {path}')
         with Image.open(path) as mask:
-            mask = np.asarray(mask.convert('L') if mask.mode == '1' else mask)
+            mask = np.asarray(mask.convert('RGB') if mask.mode in ('1', 'P', 'PA') else mask)
         if mask.dtype != np.uint8:
             raise ValueError(f'Foreground mask {path} must be 8-bit, got {mask.dtype}')
         mask = mask[..., :1] if mask.ndim == 3 else mask[..., None]
