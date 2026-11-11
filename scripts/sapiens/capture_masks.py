@@ -40,7 +40,10 @@ BACKGROUND_CLASS = 0  # index of "Background" in Sapiens' GOLIATH_CLASSES
 
 def _capture_images(capture_dir):
     images_dir = Path(capture_dir) / "images"
-    return sorted(p for p in images_dir.iterdir() if IMAGE_NAME.match(p.name))
+    paths = sorted(p for p in images_dir.iterdir() if IMAGE_NAME.match(p.name))
+    if not paths:
+        raise FileNotFoundError(f"no frame{{FFFFFF}}_cam{{CCC}}.png images in {images_dir}")
+    return paths
 
 
 def _read_rgb(path):
@@ -173,7 +176,9 @@ def generate_masks(
         batch = paths[start : start + batch_size]
         class_maps = segment([_read_rgb(p) for p in batch])
         for path, class_map in zip(batch, class_maps):
-            cv2.imwrite(str(output_dir / path.name), foreground_mask(class_map))
+            if not cv2.imwrite(str(output_dir / path.name), foreground_mask(class_map)):
+                raise IOError(f"could not write mask {output_dir / path.name}")
+        print(f"{min(start + batch_size, len(paths))}/{len(paths)} images", flush=True)
 
     if contact_sheet_frame is None:
         return None

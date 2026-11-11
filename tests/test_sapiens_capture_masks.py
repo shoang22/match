@@ -224,3 +224,12 @@ def test_help_documents_usage():
                      "Background", "frame{FFFFFF}_cam{CCC}.png"]:
         assert expected in result.stdout
 
+
+
+def test_capture_without_matching_images_is_an_error(tmp_path):
+    capture = tmp_path / "background 1"
+    (capture / "images").mkdir(parents=True)
+    (capture / "images" / "notes.png").write_bytes(b"")
+
+    with pytest.raises(FileNotFoundError, match="frame"):
+        capture_masks.generate_masks(capture, tmp_path / "masks", _striped_segmenter([0]))
