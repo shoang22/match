@@ -284,3 +284,20 @@ def test_crop_boxes_place_the_tempeh_input_inside_the_full_image(capture):
         left, top, right, bottom = boxes[0, view]
         got = [left, top] + in_crop * [right - left, bottom - top]
         np.testing.assert_allclose(got, expected, atol=1e-3)
+
+
+def test_uv_maps_in_the_full_image_are_cut_to_each_views_input_box_for_display():
+    # Two views of a 4x4 full-image UV map whose quadrants are flat colors
+    quadrants = {(0, 0): 0.2, (0, 1): 0.4, (1, 0): 0.6, (1, 1): 0.8}  # (row, column) -> value
+    uv = np.zeros((4, 4, 3))
+    for (row, col), value in quadrants.items():
+        uv[2 * row:2 * row + 2, 2 * col:2 * col + 2] = value
+    uv_maps = np.stack([uv, uv])
+    boxes = np.array([[0., 0., .5, .5],    # view 0: the top-left quadrant
+                      [.5, .5, 1., 1.]])   # view 1: the bottom-right quadrant
+
+    cut = dataset_registry.uv_maps_in_input_boxes(uv_maps, boxes, height=6, width=3)
+
+    assert cut.shape == (2, 6, 3, 3)
+    np.testing.assert_allclose(cut[0], 0.2, atol=1 / 255)
+    np.testing.assert_allclose(cut[1], 0.8, atol=1 / 255)
