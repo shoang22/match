@@ -276,6 +276,9 @@ class Trainer(BaseTrainer):
         # Read them before converting, since the TEMPEH batch drops the scene fields.
         out_subdirs = dataset_registry.sample_output_dirs(data, self.full_datasets, outdir)
         scene = {k: data[k] for k in ('scene_rotation', 'scene_center', 'scene_scale')}
+        # UV maps go in the frame MATCH loads them in: the full image, also when TEMPEH's input is head-cropped
+        uv_fxfycxcy = dataset_registry.uv_frame_fxfycxcy(data, self.full_datasets)
+        input_boxes = dataset_registry.crop_boxes_in_full_image(data, self.full_datasets)
         data = data_util.TempehBatch.from_match_batch(data_util.MatchBatch(data))
         out_paths_vert = list()
         out_paths_vis = list()
@@ -308,10 +311,12 @@ class Trainer(BaseTrainer):
         pred_points = self.global_points
         data['v_pred'] = pred_points.cpu()
         uv_renders = uv_util.render_uvmaps_from_TEMPEH_sample(data, faces=self.template_faces, face_uv_coords=self.template_face_uv_coords,
-                                                              out_height=self.args.uv_out_height, out_width=self.args.uv_out_width)
+                                                              out_height=self.args.uv_out_height, out_width=self.args.uv_out_width,
+                                                              fxfycxcy=uv_fxfycxcy)
         if save_gt:
             uv_gt_renders = uv_util.render_uvmaps_from_TEMPEH_sample(data, faces=self.template_faces, face_uv_coords=self.template_face_uv_coords,
-                                                              out_height=self.args.uv_out_height, out_width=self.args.uv_out_width, use_gtverts=True)
+                                                              out_height=self.args.uv_out_height, out_width=self.args.uv_out_width, use_gtverts=True,
+                                                              fxfycxcy=uv_fxfycxcy)
         
         # converting back from TEMPEH coordinate system (mm, normalized) to the respective dataset coordinate system
         pred_points = dataset_registry.to_dataset_frame(pred_points.detach().cpu().numpy(), scene)
@@ -347,9 +352,17 @@ class Trainer(BaseTrainer):
             # save visualization
             nvis=5
             imgs_vis = (imgs[ib]*.5+.5)[:nvis]
-            imgs_vis = torchvision.transforms.functional.resize(imgs_vis, uv_renders.shape[2:4])
+            uv_vis = uv_renders[ib, :nvis]
+            if uv_fxfycxcy is not None:
+                # UV maps are in the full image: show the part covering TEMPEH's (head-cropped) input
+                uv_h, uv_w = uv_vis.shape[1:3]
+                uv_vis = np.stack([
+                    np.asarray(Image.fromarray(np.round(uv*255).clip(0, 255).astype(np.uint8))
+                               .crop((l*uv_w, t*uv_h, r*uv_w, b*uv_h)).resize(imgs_vis.shape[:-3:-1], Image.NEAREST))
+                    for uv, (l, t, r, b) in zip(uv_vis, input_boxes[ib, :nvis])]) / 255.
+            imgs_vis = torchvision.transforms.functional.resize(imgs_vis, uv_vis.shape[1:3])
             imgs_vis = einops.rearrange(imgs_vis, 'V C H W -> H (V W) C').cpu().numpy()
-            uv_vis = einops.rearrange(uv_renders[ib, :nvis], 'V H W C -> H (V W) C')
+            uv_vis = einops.rearrange(uv_vis, 'V H W C -> H (V W) C')
             vis_img = np.concatenate([imgs_vis, uv_vis, (imgs_vis + uv_vis)*.5], axis=0)
             vis_img = Image.fromarray(np.round(vis_img*255).clip(0, 255).astype(np.uint8))
             h_vis = 512

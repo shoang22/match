@@ -90,3 +90,34 @@ def sample_output_dirs(batch, datasets, outdir) -> list:
     return [Path(outdir) / ds.DATASET_TYPE / str(subject) / str(sequence) / str(frame)
             for ds, subject, sequence, frame in zip(
                 _producing_datasets(batch, datasets), batch['subject'], batch['sequence'], batch['frame'])]
+
+
+
+def crop_boxes_in_full_image(batch, datasets):
+    """Where each view's (head-cropped) input image lies in the full (resized, uncropped) image of its dataset:
+    (B, V, 4) as left, top, right, bottom, normalized by the full image size."""
+    bboxs = np.asarray(batch['bboxs'], dtype=np.float64)  # in full-image pixels
+    full = np.array([(ds.width, ds.height) for ds in _producing_datasets(batch, datasets)], dtype=np.float64)
+    return bboxs / np.tile(full, 2)[:, None, :]
+
+
+def uv_frame_fxfycxcy(batch, datasets):
+    """Intrinsics to render each sample's per-camera UV maps with, or None to keep TEMPEH's input frame.
+
+    MATCH loads a UV map by resizing it to the full (resized, uncropped) image of its dataset, then applies its own
+    head crop. A head-cropped TEMPEH input therefore needs its UV maps rendered in the full image: this returns the
+    full-image intrinsics (B, V, 4) as normalized fx, fy, cx, cy. Without any head crop in the batch, TEMPEH's input
+    is already the full image, so None.
+    """
+    crop_h, crop_w = batch['image'].shape[-2:]
+    if np.all(np.asarray(batch['bboxs']) == [0, 0, crop_w, crop_h]):
+        return None
+    fxfycxcy = np.asarray(batch['fxfycxcy'], dtype=np.float64)  # normalized by the input (crop) size
+    left, top, right, bottom = np.moveaxis(crop_boxes_in_full_image(batch, datasets), -1, 0)
+    width, height = right - left, bottom - top
+    return np.stack([
+        fxfycxcy[..., 0] * width,
+        fxfycxcy[..., 1] * height,
+        fxfycxcy[..., 2] * width + left,
+        fxfycxcy[..., 3] * height + top,
+    ], axis=-1).astype(np.float32)
