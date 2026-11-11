@@ -1,0 +1,125 @@
+# PYTHONPATH=$(pwd) PYOPENGL_PLATFORM=egl conda run -n match --no-capture-output torchrun --standalone --nnodes=1 --nproc-per-node=1 scripts/match/eval_sequence.py --gin_configs configs/match/eval_sequence_SEN_a_good_morrow.gin
+# Sequence evaluation of the pretrained MATCH model (uv_res_1024, 860k) on all 40 frames of TCE049's SEN_a_good_morrow_to_you_my_boy segment:
+# one independent forward pass per frame with the 12 standard input cameras, rendered from the 3 held-out cameras with their real calibration.
+#
+# Rerun from the repo root, in the `match` conda env (PYTHONPATH=$(pwd) makes a git worktree use its own `match` package):
+#   0. Quickstart data and weights: data/ava-256/20230807--0839--TCE049 (configs/data/download_ava256_quickstart.gin) and
+#      assets/pretrained_models/{match/uv_res_1024,tempeh}. RAFT-large weights download to ~/.cache/torch/hub on first use.
+#   1. Held-out cameras 402040, 401905, 402031 (images + foreground masks, 4TB tier, ~320 MB); check that all 3 zips appear in
+#      image/ and foreground_masks/, since the download script swallows errors:
+#        conda run -n match python condor/run.py configs/data/download_ava256_heldout.gin
+#   2. TEMPEH coarse meshes and UV maps of the 12 input cameras for every frame of the segment (~1 min on the GPU), written to AVA_UV_DIR:
+#        PYTHONPATH=$(pwd) PYOPENGL_PLATFORM=egl conda run -n match --no-capture-output python condor/run.py configs/tempeh/save_predictions_seq_SEN_a_good_morrow.yml
+#   3. Optional smoke check (3 frames, 1 held-out camera, ~2 min): configs/match/eval_sequence_smoketest.gin.
+#   4. The command on the first line. It needs the whole 24 GB GPU and leaves no headroom: nvidia-smi peaks at ~24.0 GB of the 24.5 GB,
+#      so nothing else may hold GPU memory while it runs.
+#      Leave PYTORCH_CUDA_ALLOC_CONF unset: expandable_segments:True runs out of memory on the 24 GB GPU.
+#      Each MATCH run starts Xvfb on display :99, so run one at a time; after a crash, kill the orphan with pkill -f "[X]vfb -br.*:99".
+#      30-50 s per source frame (the forward pass gets slower once the GPU memory is full) plus ~1 min of RAFT on the CPU
+#      for the temporal metrics and video encoding: ~27 min in total.
+#   5. Check the outputs: conda run -n match python -m pytest tests/test_eval_sequence_outputs.py
+#
+# Output (OUT_DIR): grid.mp4 (h264 yuv420p, 24 fps, 5.3 s = real time, 2x2 panels: MATCH prediction and real image from the closest-to-frontal held-out camera 402040,
+# the bare TEMPEH coarse mesh from the same camera, and an orbit once round the head), preview.mp4 (the same grid, each source frame shown once for
+# 1/PREVIEW_FPS s, to spot flicker quickly), metrics.json (masked PSNR/SSIM/LPIPS per frame and held-out camera, raw flicker and
+# flow-aligned error per frame pair for prediction and real footage, means and worst frames), plot_image_metrics.png and
+# plot_temporal_metrics.png (per-frame metrics against source frame ID), config_<i>.gin (the files passed) and config_all.gin
+# (every binding, includes resolved).
+
+include 'assets/pretrained_models/match/uv_res_1024/config_0.gin'
+NAME = 'eval_sequence-SEN_a_good_morrow'
+MODEL_PATH = 'assets/pretrained_models/match/uv_res_1024'
+CKPT = 860_000
+N_GPUS = 1
+OUT_DIR = 'experiments/match/eval_sequence/SEN_a_good_morrow'
+
+AVA_ROOT = 'data/ava-256'
+SUBJECT = 'TCE049'
+SEGMENT = 'SEN_a_good_morrow_to_you_my_boy'
+FRAME_STRIDE = 1  # applied within the segment; the 4TB frame list already has every 12th frame ID (7.5 fps)
+NFRAMES = -1      # all frames of the segment
+# Frame IDs per second. Ava-256 frame IDs advance 90 times per second: the cameras record at 30 fps and the 4TB tier keeps
+# 7.5 fps (Martinez et al. 2024, Sec. 2.1 and Table 1) while its frame IDs step by 12, so consecutive frames are 2/15 s apart.
+CAPTURE_FPS = 90
+PREVIEW_FPS = 10  # source frames per second in preview.mp4 (the source has 7.5 per second)
+# TEMPEH coarse meshes and UV maps for every frame of the segment (#6)
+AVA_UV_DIR = 'data/tempeh_predictions/ava-256/seq_SEN_a_good_morrow/ava-256'
+AVA_SAPIENS_SEG_DIR = None
+
+# Held-out cameras (never inputs): IDs and their exact [az, el] in degrees from camera_calibration.json
+# (convention of data_util.sample_cameras_from_angles). The dataset picks the nearest non-input camera for each angle;
+# the run checks that it picked exactly these IDs. Downloaded with configs/data/download_ava256_heldout.gin.
+#   402040 [7.7, 24.0]   interpolating, target [10, 10]; closest to frontal, so it is the fixed novel viewpoint
+#   401905 [-31.0, 4.7]  interpolating, target [-30, 15]
+#   402031 [75.6, -1.5]  extrapolating, target [60, 0] (the input cameras span az -38.7..42.3, el -13.0..38.6)
+# The two interpolating cameras sit 10-14 deg in elevation off their targets because the cameras nearer the targets miss
+# frames of this segment: each 4TB camera zip lacks some of the capture's 5,024 frames, and a held-out camera must have
+# an image and a mask for all 40 segment frames (e.g. 401883 [-24.6, 21.8] lacks 32897, 32909 and 32933). These are the
+# nearest cameras with every frame. The run stops with HeldOutCameraError if any frame is missing.
+HELDOUT_CAMERA_IDS = ['402040', '401905', '402031']
+HELDOUT_CAMERA_ANGLES = [[7.7, 24.0], [-31.0, 4.7], [75.6, -1.5]]
+
+# Orbit panel: the camera-sweep path (default angle range and intrinsics), one pose per 24 fps video frame, starting
+# frontal. It goes round ORBIT_LOOPS whole times over the grid video (once: 128 frames, 5.3 s), so it never stops mid-orbit.
+# ORBIT_LOOPS must divide the number of grid-video frames.
+ORBIT_LOOPS = 1
+OrbitPanel.loops = %ORBIT_LOOPS
+
+condor_name/join_strings.strings = ['.', %NAME, '-', %CKPT]
+cmd/join_strings.strings = ['torchrun --standalone --nnodes=1 --nproc-per-node=', %N_GPUS, ' scripts/match/eval_sequence.py --gin_configs __CONFIG__']
+
+eval_sequence:
+  out_dir = %OUT_DIR
+  heldout_camera_ids = %HELDOUT_CAMERA_IDS
+  capture_fps = %CAPTURE_FPS
+  fps = 24
+  preview_fps = %PREVIEW_FPS
+
+Options:
+  base_folder = %OUT_DIR
+  load_pretrained_model = %MODEL_PATH
+  load_pretrained_model_ckpt = %CKPT
+
+  val_loader_params = [
+    {
+      'name': 'ava_sequence',
+      'cls': 'ava256',
+      'kwargs': {
+        'dataloader_kwargs': {
+          'batch_size': 1,
+          'num_workers': 2,
+        },
+        'dataset_kwargs': {
+          'nframes': %NFRAMES,
+          'root_path': %AVA_ROOT,
+          'only_subjects': [%SUBJECT],
+          'segment': %SEGMENT,
+          'frame_stride': %FRAME_STRIDE,
+          'height': %AVA_HEIGHT,
+          'width': %AVA_WIDTH,
+          'camera_angles': %AVA_CAMERA_ANGLES,
+          'extra_camera_angles': %HELDOUT_CAMERA_ANGLES,
+          'uv_directory': %AVA_UV_DIR,
+          'coarse_mesh_directory': %AVA_UV_DIR,
+          'max_captures': %AVA_MAX_CAPTURES,
+          'head_crop': %HEAD_CROP,
+          'head_crop_height': %HEAD_CROP_HEIGHT,
+          'head_crop_width': %HEAD_CROP_WIDTH,
+          'head_crop_offset_y': %HEAD_CROP_OFFSET_Y,
+          'sapiens_segmentation_directory': %AVA_SAPIENS_SEG_DIR,
+          'deterministic_shuffle': False,
+          'training': None,
+          'require_segmentation': False,
+          'require_verts': False,
+        }
+      }
+    },
+  ]
+
+CondorParameters:
+  njobs = 1
+  environment = {}
+  name = @condor_name/join_strings()
+  batch_name = @condor_name/join_strings()
+  cmd = @cmd/join_strings()
+  requirements = '(TARGET.CUDACapability >= 7.0)'
