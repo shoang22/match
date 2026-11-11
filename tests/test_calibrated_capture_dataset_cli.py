@@ -12,6 +12,8 @@ from PIL import Image  # noqa: E402
 import synthetic_capture as synth  # noqa: E402
 from match.data import calibrated_capture_dataset_cli  # noqa: E402
 
+pytestmark = pytest.mark.usefixtures('fail_instead_of_hanging')
+
 
 def test_cli_writes_a_visualization_of_one_sample(tmp_path):
     capture = synth.write_capture(tmp_path / 'capture 1', tmp_path / 'masks', nframes=1)

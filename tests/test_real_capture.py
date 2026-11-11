@@ -18,8 +18,9 @@ import pytest
 CAPTURE = os.environ.get('MATCH_REAL_CAPTURE')
 MASKS = os.environ.get('MATCH_REAL_CAPTURE_MASKS')
 
-pytestmark = pytest.mark.skipif(not (CAPTURE and MASKS),
-                                reason='set MATCH_REAL_CAPTURE and MATCH_REAL_CAPTURE_MASKS to run')
+pytestmark = [pytest.mark.skipif(not (CAPTURE and MASKS),
+                                 reason='set MATCH_REAL_CAPTURE and MATCH_REAL_CAPTURE_MASKS to run'),
+              pytest.mark.usefixtures('fail_instead_of_hanging')]
 
 if not Path('assets').exists():
     pytest.skip('assets/ is missing; see the worktree section of CLAUDE.md', allow_module_level=True)

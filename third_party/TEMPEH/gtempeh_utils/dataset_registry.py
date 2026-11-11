@@ -37,6 +37,7 @@ def dataset_specs_from_args(args) -> list:
         frame_stride=args.frame_stride,
         max_captures=args.max_captures,
         only_subjects=_literal(args.subjects, []),
+        segment=getattr(args, 'segment', None),
     )]
     nersemble_root = getattr(args, 'nersemble_dataset_directory', None)
     if nersemble_root is not None:

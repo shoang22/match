@@ -78,6 +78,7 @@ class AvaSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
 
     Args:
         capture: The unique identifier of this mugsy capture
+        segment: if given, restrict the frame list to this segment (seg_id in frame_list.csv), before frame_stride
     """
 
     SCALE_FACTOR = np.array(1./1000, dtype=np.float32)  # converting geometry from mm to m
@@ -85,7 +86,8 @@ class AvaSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
     DATASET_TYPE = 'ava-256'
 
 
-    def __init__(self, sapiens_segmentation_directory:str ='', **kwargs):
+    def __init__(self, sapiens_segmentation_directory:str ='', segment: Optional[str] = None, **kwargs):
+        self.segment = segment  # set before super().__init__, which calls load_metadata
         super().__init__(**kwargs)        
         self.ava_original2cleaned_vert_mapping = np.load(f'{asset_dir}/ava256/original_2_cleaned_vertmapping.npy')
         self.sapiens_segmentation_directory = sapiens_segmentation_directory
@@ -129,15 +131,25 @@ class AvaSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
 
     @staticmethod
     def get_framelist(
-        dataset_dir: Path, nframes: int = -1, frame_stride=1, skip_sequences=[]
+        dataset_dir: Path, nframes: int = -1, frame_stride=1, skip_sequences=[], segment: Optional[str] = None
     ) -> pd.DataFrame:
         """
         Load framelist
+
+        segment: if given, keep only the frames of this segment (seg_id). Applied before frame_stride.
         """
 
         # Load frame list; ie, (segment, frame) pairs
         frame_list_path = f"{dataset_dir}/frame_list.csv"
         framelist = pd.read_csv(frame_list_path, dtype=str, sep=r",")
+        if segment is not None:
+            segment_frames = framelist[framelist['seg_id'] == segment]
+            if len(segment_frames) == 0:
+                raise ValueError(
+                    f"Segment '{segment}' is not in {frame_list_path}. "
+                    f"Available segments include: {list(framelist['seg_id'].unique()[:10])}"
+                )
+            framelist = segment_frames
         framelist = framelist.iloc[::frame_stride]
         for s in skip_sequences:
             framelist = framelist[~framelist['seg_id'].str.startswith(s)]
@@ -146,7 +158,7 @@ class AvaSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
         return framelist
     
     def load_metadata(self):
-        self.framelist = self.get_framelist(dataset_dir = self.dir, nframes=self.nframes, frame_stride=self.frame_stride, skip_sequences=self.skip_sequences)
+        self.framelist = self.get_framelist(dataset_dir = self.dir, nframes=self.nframes, frame_stride=self.frame_stride, skip_sequences=self.skip_sequences, segment=self.segment)
         self.full_framelist = self.get_framelist(dataset_dir = self.dir)
         self.krt_dict = self.load_camera_calibration()
 
