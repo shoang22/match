@@ -19,8 +19,8 @@ VIDEO_PIX_FMT = 'yuv420p'  # limited-range 4:2:0, which every player decodes (ff
 def source_frame_times(frame_ids, capture_fps):
     """Start time (s, exact Fraction) of every source frame relative to the first, and the hold of the last one.
 
-    Frame IDs count recorded frames at capture_fps, so frame i starts at (id_i - id_0) / capture_fps. The last
-    frame is held for the median spacing of the sequence.
+    Frame IDs advance capture_fps times per second (90 for Ava-256, whose cameras record on every 3rd ID), so
+    frame i starts at (id_i - id_0) / capture_fps. The last frame is held for the median spacing of the sequence.
     """
     ids = [int(f) for f in frame_ids]
     if len(ids) < 2:

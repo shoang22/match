@@ -1,7 +1,7 @@
 # PYTHONPATH=$(pwd) PYOPENGL_PLATFORM=egl conda run -n match --no-capture-output torchrun --standalone --nnodes=1 --nproc-per-node=1 scripts/match/eval_sequence.py --gin_configs configs/match/eval_sequence_smoketest.gin
 # Smoke test of the sequence evaluation: the first 3 frames of SEN_a_good_morrow_to_you_my_boy and one held-out camera (402040, the one closest to frontal).
 # Same model, inputs and data as the full config; only the frame count, held-out cameras and output folder change
-# (the orbit still makes one whole loop, over the 1.2 s video). A few minutes on one 24 GB GPU.
+# (the orbit still makes one whole loop, over the 0.4 s video). A few minutes on one 24 GB GPU.
 # Check the outputs afterwards: conda run -n match python -m pytest tests/test_eval_sequence_outputs.py tests/test_eval_sequence_smoketest.py
 
 include 'configs/match/eval_sequence_SEN_a_good_morrow.gin'

@@ -12,7 +12,9 @@ DECODER_DIR = AVA_ROOT / '20230807--0839--TCE049' / 'decoder'
 ASSETS = REPO_ROOT / 'assets'
 
 SEGMENT = 'SEN_a_good_morrow_to_you_my_boy'
-# The 4TB tier keeps every 12th recorded frame (0.4 s apart at 30 fps): 32885, 32897, ..., 33353.
+# Ava-256 frame IDs advance 90 times per second: the cameras record at 30 fps and the 4TB tier keeps 7.5 fps
+# (Martinez et al. 2024, Sec. 2.1 and Table 1), so its frames are 12 IDs = 2/15 s apart: 32885, 32897, ..., 33353.
+FRAME_IDS_PER_SECOND = 90
 SEGMENT_FRAMES = [str(32885 + 12 * k) for k in range(40)]
 
 # The camera the dataset picks for each input angle of the pretrained uv_res_1024 config, in angle order.
