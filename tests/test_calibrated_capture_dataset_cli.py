@@ -1,4 +1,5 @@
 """The calibrated-capture debug CLI loads one sample and writes a visualization."""
+import re
 from pathlib import Path
 
 import pytest
@@ -22,3 +23,11 @@ def test_cli_writes_a_visualization_of_one_sample(tmp_path):
     ])
     with Image.open(out) as img:
         assert img.width > 0 and img.height > 0
+
+
+def test_cli_defaults_to_the_framing_of_the_shipped_match_config():
+    config = Path('configs/match/save_camera_sweeps_calibrated.gin').read_text()
+    macro = {name: int(value) for name, value in re.findall(r'^(CAPTURE_\w+) = (-?\d+)', config, re.MULTILINE)}
+    args = calibrated_capture_dataset_cli.parse_args(['--root', 'capture', '--mask-dir', 'masks'])
+    assert (args.height, args.width) == (macro['CAPTURE_HEIGHT'], macro['CAPTURE_WIDTH'])
+    assert args.crop_offset_y == macro['CAPTURE_HEAD_CROP_OFFSET_Y']
