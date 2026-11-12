@@ -13,6 +13,11 @@ TYPE_DEFAULTS = {
     'nersemble': dict(invalid_captures_path='assets/nersemble/invalid_captures.txt'),
 }
 
+# Output folder of each dataset type, where it differs from the type name (existing Ava-256 output paths)
+OUTPUT_FOLDERS = {
+    'ava256': 'ava-256',
+}
+
 def _literal(value, default):
     if value is None:
         return default
@@ -81,60 +86,9 @@ def to_dataset_frame(points_mm, batch):
         center=as_numpy(batch['scene_center']))
 
 
-def _producing_datasets(batch, datasets) -> list:
-    """For each sample of a collated `MultiDataset` batch, the dataset that produced it."""
-    return [datasets[int(i)] for i in batch['dataset_idx']]
-
-
-def sample_output_dirs(batch, datasets, outdir) -> list:
-    """`<outdir>/<dataset type>/<subject>/<sequence>/<frame>` for each sample of the batch."""
-    return [Path(outdir) / ds.DATASET_TYPE / str(subject) / str(sequence) / str(frame)
-            for ds, subject, sequence, frame in zip(
-                _producing_datasets(batch, datasets), batch['subject'], batch['sequence'], batch['frame'])]
-
-
-
-def crop_boxes_in_full_image(batch, datasets):
-    """Where each view's (head-cropped) input image lies in the full (resized, uncropped) image of its dataset:
-    (B, V, 4) as left, top, right, bottom, normalized by the full image size."""
-    bboxs = np.asarray(batch['bboxs'], dtype=np.float64)  # in full-image pixels
-    full = np.array([(ds.width, ds.height) for ds in _producing_datasets(batch, datasets)], dtype=np.float64)
-    return bboxs / np.tile(full, 2)[:, None, :]
-
-
-def uv_frame_fxfycxcy(batch, datasets):
-    """Intrinsics to render each sample's per-camera UV maps with, or None to keep TEMPEH's input frame.
-
-    MATCH loads a UV map by resizing it to the full (resized, uncropped) image of its dataset, then applies its own
-    head crop. A head-cropped TEMPEH input therefore needs its UV maps rendered in the full image: this returns the
-    full-image intrinsics (B, V, 4) as normalized fx, fy, cx, cy. Without any head crop in the batch, TEMPEH's input
-    is already the full image, so None.
-    """
-    crop_h, crop_w = batch['image'].shape[-2:]
-    if np.all(np.asarray(batch['bboxs']) == [0, 0, crop_w, crop_h]):
-        return None
-    fxfycxcy = np.asarray(batch['fxfycxcy'], dtype=np.float64)  # normalized by the input (crop) size
-    left, top, right, bottom = np.moveaxis(crop_boxes_in_full_image(batch, datasets), -1, 0)
-    width, height = right - left, bottom - top
-    return np.stack([
-        fxfycxcy[..., 0] * width,
-        fxfycxcy[..., 1] * height,
-        fxfycxcy[..., 2] * width + left,
-        fxfycxcy[..., 3] * height + top,
-    ], axis=-1).astype(np.float32)
-
-
-def uv_maps_in_input_boxes(uv_maps, boxes, height, width):
-    """The part of each full-image UV map that TEMPEH's (head-cropped) input covers, for display next to that input.
-
-    uv_maps: (V, H, W, 3) in [0, 1], rendered in the full image (see `uv_frame_fxfycxcy`).
-    boxes: (V, 4) left, top, right, bottom of each input in the full image, normalized (`crop_boxes_in_full_image`).
-    Returns (V, height, width, 3) in [0, 1]: each box cut out and resized (nearest neighbor), quantized to 8 bits.
-    """
-    from PIL import Image
-
-    uv_h, uv_w = uv_maps.shape[1:3]
-    return np.stack([
-        np.asarray(Image.fromarray(np.round(uv * 255).clip(0, 255).astype(np.uint8))
-                   .crop((l * uv_w, t * uv_h, r * uv_w, b * uv_h)).resize((width, height), Image.NEAREST))
-        for uv, (l, t, r, b) in zip(uv_maps, boxes)]) / 255.
+def sample_output_dirs(batch, specs, outdir) -> list:
+    """`<outdir>/<dataset folder>/<subject>/<sequence>/<frame>` for each sample of a collated `MultiDataset` batch,
+    where the folder is named after the type of the spec whose dataset produced the sample."""
+    folders = [OUTPUT_FOLDERS.get(specs[int(i)]['type'], specs[int(i)]['type']) for i in batch['dataset_idx']]
+    return [Path(outdir) / folder / str(subject) / str(sequence) / str(frame)
+            for folder, subject, sequence, frame in zip(folders, batch['subject'], batch['sequence'], batch['frame'])]

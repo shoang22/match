@@ -462,12 +462,7 @@ def tf_render_uvmaps(
 
 def render_uvmaps_from_TEMPEH_sample(sample, faces: np.ndarray,
     face_uv_coords: np.ndarray,
-    use_gtverts: bool = False, out_height=None, out_width=None, fxfycxcy=None):
-  """UV maps of a TEMPEH sample, rendered in the sample's input frame, or with `fxfycxcy` (B, V, 4) when given.
-
-  `fxfycxcy` are normalized intrinsics of another frame of the same cameras, e.g. the full image of a head-cropped
-  input; then `out_height` and `out_width` should have that frame's aspect ratio.
-  """
+    use_gtverts: bool = False, out_height=None, out_width=None):
 
   # inverting procedure from data_utils.public_sample_to_TEMPEH_sample and factoring in public2gtempeh sample
   scale_factor = 1e-3
@@ -487,10 +482,7 @@ def render_uvmaps_from_TEMPEH_sample(sample, faces: np.ndarray,
   fy = intrinsics[..., 1, 1]/H
   cx = (intrinsics[..., 0, 2]+0.5)/W
   cy = (intrinsics[..., 1, 2]+0.5)/H
-  if fxfycxcy is None:
-    fxfycxcy = torch.stack([fx,fy,cx,cy], dim=-1)
-  else:
-    fxfycxcy = torch.as_tensor(fxfycxcy, dtype=intrinsics.dtype)
+  fxfycxcy = torch.stack([fx,fy,cx,cy], dim=-1)
 
   gtempeh_sample = dict(
     image=imgs,

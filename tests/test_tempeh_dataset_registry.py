@@ -101,23 +101,23 @@ def first_batch(datasets):
 
 @requires_ava
 def test_ava256_quickstart_sample_is_routed_to_the_ava256_folder(tmp_path):
-    datasets = dataset_registry.build_datasets(dataset_registry.dataset_specs_from_args(legacy_args()))
-    batch = first_batch(datasets)
+    specs = dataset_registry.dataset_specs_from_args(legacy_args())
+    batch = first_batch(dataset_registry.build_datasets(specs))
 
-    out_dirs = dataset_registry.sample_output_dirs(batch, datasets, tmp_path)
+    out_dirs = dataset_registry.sample_output_dirs(batch, specs, tmp_path)
 
     assert out_dirs == [tmp_path / 'ava-256' / 'TCE049' / 'SEN_a_good_morrow_to_you_my_boy' / '32885']
 
 
-def test_output_folder_comes_from_the_producing_dataset_not_its_position(tmp_path):
-    datasets = [SimpleNamespace(DATASET_TYPE='nersemble'), SimpleNamespace(DATASET_TYPE='ava-256'),
-                SimpleNamespace(DATASET_TYPE='some-capture')]
+def test_output_folder_comes_from_the_producing_datasets_type_not_its_position(tmp_path):
+    specs = [dict(type='nersemble'), dict(type='ava256'), dict(type='calibrated')]
     batch = dict(dataset_idx=np.array([2, 0, 1]), subject=['s2', 's0', 's1'], sequence=['q2', 'q0', 'q1'],
                  frame=['2', '0', '1'])
 
-    out_dirs = dataset_registry.sample_output_dirs(batch, datasets, tmp_path)
+    out_dirs = dataset_registry.sample_output_dirs(batch, specs, tmp_path)
 
-    assert out_dirs == [tmp_path / 'some-capture/s2/q2/2', tmp_path / 'nersemble/s0/q0/0', tmp_path / 'ava-256/s1/q1/1']
+    # Ava-256 keeps its existing folder name
+    assert out_dirs == [tmp_path / 'calibrated/s2/q2/2', tmp_path / 'nersemble/s0/q0/0', tmp_path / 'ava-256/s1/q1/1']
 
 
 @requires_ava
@@ -155,10 +155,10 @@ import synthetic_capture as synth  # noqa: E402
 
 
 def calibrated_spec(capture, **overrides):
-    """A TEMPEH `--datasets` entry for a calibrated capture, head-cropped like TEMPEH's Ava input."""
+    """A TEMPEH `--datasets` entry for a calibrated capture: like TEMPEH's Ava input, the full image (which the
+    dataset cuts to Ava's aspect ratio, 104x160 here) resized, with no head crop."""
     spec = dict(type='calibrated', root_path=str(capture.root), mask_directory=str(capture.mask_dir),
-                camera_angles=synth.AVA_CAMERA_ANGLES, height=128, width=160,
-                head_crop=True, head_crop_height=96, head_crop_width=63, head_crop_offset_y=0, frame_stride=1)
+                camera_angles=synth.AVA_CAMERA_ANGLES, height=128, width=83, frame_stride=1)
     spec.update(overrides)
     return spec
 
@@ -171,13 +171,12 @@ def capture(tmp_path):
 def test_a_calibrated_capture_alone_is_routed_to_the_calibrated_folder(capture, tmp_path):
     specs = dataset_registry.dataset_specs_from_args(legacy_args(
         dataset_directory='does/not/exist', datasets=repr([calibrated_spec(capture)])))
-    datasets = dataset_registry.build_datasets(specs)
-    batch = first_batch(datasets)
+    batch = first_batch(dataset_registry.build_datasets(specs))
 
-    out_dirs = dataset_registry.sample_output_dirs(batch, datasets, tmp_path / 'out')
+    out_dirs = dataset_registry.sample_output_dirs(batch, specs, tmp_path / 'out')
 
     assert out_dirs == [tmp_path / 'out' / 'calibrated' / 'capture 1' / 'capture 1' / '000000']
-    assert tuple(batch['image'].shape[-3:]) == (3, 96, 63)
+    assert tuple(batch['image'].shape[-3:]) == (3, 128, 83)
 
 
 def test_calibrated_predictions_return_to_calibration_units(capture):
@@ -191,34 +190,14 @@ def test_calibrated_predictions_return_to_calibration_units(capture):
     np.testing.assert_allclose(np.linalg.norm(points[0, 1] - points[0, 0]), 100., atol=1e-3)
 
 
-def normalized_projection(c2w, fxfycxcy, points):
-    """Projection of world points to image coordinates in [0, 1] (top-left image corner at 0)."""
-    w2c = np.linalg.inv(np.asarray(c2w, dtype=np.float64))
-    fx, fy, cx, cy = np.asarray(fxfycxcy, dtype=np.float64)
-    cam = (w2c[:3, :3] @ np.asarray(points, dtype=np.float64).T).T + w2c[:3, 3]
-    return np.stack([fx * cam[:, 0] / cam[:, 2] + cx, fy * cam[:, 1] / cam[:, 2] + cy], axis=-1)
+def test_tempeh_input_and_matchs_full_image_share_their_normalized_intrinsics(capture):
+    # TEMPEH renders UV maps in its input frame, and MATCH resizes them to its full image before its own head crop.
+    # Both are the dataset's Ava-aspect crop at different sizes, so normalized intrinsics agree for every view.
+    tempeh = first_batch(dataset_registry.build_datasets([calibrated_spec(capture)]))
+    match = first_batch(dataset_registry.build_datasets([calibrated_spec(capture, height=160, width=104)]))
 
-
-def test_uv_maps_of_head_cropped_samples_are_framed_like_the_full_image(capture):
-    # MATCH resizes a loaded UV map to the full (uncropped) image before its own head crop, so the UV maps of a
-    # head-cropped TEMPEH input must be rendered with the intrinsics of the full image.
-    datasets = dataset_registry.build_datasets([calibrated_spec(capture)])
-    batch = first_batch(datasets)
-
-    fxfycxcy = dataset_registry.uv_frame_fxfycxcy(batch, datasets)
-
-    markers = (synth.MARKERS_MM - synth.HEAD_CENTER_MM) / 1000.  # normalized world: m, head at the origin
-    for view, camera in enumerate(batch['camera'][0].tolist()):
-        expected = (capture.cameras[camera].project(synth.MARKERS_MM) + 0.5) / [synth.NATIVE_WIDTH, synth.NATIVE_HEIGHT]
-        got = normalized_projection(batch['C2W'][0, view], fxfycxcy[0, view], markers)
-        np.testing.assert_allclose(got, expected, atol=1e-3)  # 1e-3 of the image size
-
-
-def test_uncropped_samples_keep_uv_maps_in_the_tempeh_input_frame(capture):
-    datasets = dataset_registry.build_datasets([calibrated_spec(capture, head_crop=False)])
-    batch = first_batch(datasets)
-
-    assert dataset_registry.uv_frame_fxfycxcy(batch, datasets) is None
+    assert tempeh['camera'].tolist() == match['camera'].tolist()
+    np.testing.assert_allclose(tempeh['fxfycxcy'].numpy(), match['fxfycxcy'].numpy(), rtol=1e-6)
 
 
 CALIBRATED_CONFIG = REPO_ROOT / 'configs' / 'tempeh' / 'save_predictions_calibrated.yml'
@@ -252,52 +231,18 @@ def test_shipped_calibrated_config_runs_on_a_capture_alone_once_its_paths_are_ed
     assert spec['root_path'] == str(capture.root)
     assert spec['mask_directory'] == str(capture.mask_dir)
     assert spec['camera_angles'] == synth.AVA_CAMERA_ANGLES
-    # TEMPEH's input: a head crop with Ava's aspect ratio, at TEMPEH's 256x167 input size
-    assert spec['head_crop'] is True
-    assert (spec['head_crop_height'], spec['head_crop_width']) == (256, 167)
-    assert spec['height'] == spec['width']  # the capture's native aspect ratio is 1:1
-    # UV maps in the full image, at the capture's native aspect ratio
-    assert args.uv_out_height == args.uv_out_width
+    # TEMPEH's input as for Ava: the full (Ava-aspect) image at 256x167, no head crop
+    assert (spec['height'], spec['width']) == (256, 167)
+    assert not spec.get('head_crop', False)
+    # UV maps in the same frame, at MATCH's Ava-256 image size
+    assert (args.uv_out_height, args.uv_out_width) == (786, 512)
 
 
 def test_shipped_calibrated_config_frames_tempeh_input_at_avas_head_scale(monkeypatch):
     # A 200 mm head is ~121 px wide in Ava's 256x167 TEMPEH input; on the target capture (focal ~2400 px, head
-    # ~1 m away, 1024 px images) it is ~480 px wide at native resolution.
+    # ~1 m away, 1024 px images) it is ~480 px wide at native resolution. The Ava-aspect crop keeps all 1024 rows.
     _, args = parse_shipped_config(CALIBRATED_CONFIG, monkeypatch)
     spec = dataset_registry.dataset_specs_from_args(args)[0]
 
-    head_px = 480 * spec['width'] / 1024
+    head_px = 480 * spec['height'] / 1024
     assert 105 <= head_px <= 135
-
-
-def test_crop_boxes_place_the_tempeh_input_inside_the_full_image(capture):
-    # e.g. to show UV maps rendered in the full image next to TEMPEH's head-cropped input
-    datasets = dataset_registry.build_datasets([calibrated_spec(capture)])
-    batch = first_batch(datasets)
-
-    boxes = dataset_registry.crop_boxes_in_full_image(batch, datasets)
-
-    markers = (synth.MARKERS_MM - synth.HEAD_CENTER_MM) / 1000.
-    for view, camera in enumerate(batch['camera'][0].tolist()):
-        expected = (capture.cameras[camera].project(synth.MARKERS_MM) + 0.5) / [synth.NATIVE_WIDTH, synth.NATIVE_HEIGHT]
-        in_crop = normalized_projection(batch['C2W'][0, view], batch['fxfycxcy'][0, view], markers)
-        left, top, right, bottom = boxes[0, view]
-        got = [left, top] + in_crop * [right - left, bottom - top]
-        np.testing.assert_allclose(got, expected, atol=1e-3)
-
-
-def test_uv_maps_in_the_full_image_are_cut_to_each_views_input_box_for_display():
-    # Two views of a 4x4 full-image UV map whose quadrants are flat colors
-    quadrants = {(0, 0): 0.2, (0, 1): 0.4, (1, 0): 0.6, (1, 1): 0.8}  # (row, column) -> value
-    uv = np.zeros((4, 4, 3))
-    for (row, col), value in quadrants.items():
-        uv[2 * row:2 * row + 2, 2 * col:2 * col + 2] = value
-    uv_maps = np.stack([uv, uv])
-    boxes = np.array([[0., 0., .5, .5],    # view 0: the top-left quadrant
-                      [.5, .5, 1., 1.]])   # view 1: the bottom-right quadrant
-
-    cut = dataset_registry.uv_maps_in_input_boxes(uv_maps, boxes, height=6, width=3)
-
-    assert cut.shape == (2, 6, 3, 3)
-    np.testing.assert_allclose(cut[0], 0.2, atol=1 / 255)
-    np.testing.assert_allclose(cut[1], 0.8, atol=1 / 255)

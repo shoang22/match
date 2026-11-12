@@ -38,8 +38,9 @@ def parse_args(argv):
     parser.add_argument('--mask-dir', required=True, help='foreground masks, named like the images')
     parser.add_argument('--out', default='demos/calibrated_capture_sample.png')
     parser.add_argument('--index', type=int, default=0, help='sample index')
-    parser.add_argument('--height', type=int, default=800)
-    parser.add_argument('--width', type=int, default=800)
+    parser.add_argument('--height', type=int, default=786,
+                        help="resize target of the (Ava-aspect) image; default: the pretrained model's Ava size")
+    parser.add_argument('--width', type=int, default=512)
     parser.add_argument('--crop-height', type=int, default=640)
     parser.add_argument('--crop-width', type=int, default=512)
     parser.add_argument('--crop-offset-y', type=int, default=-128,

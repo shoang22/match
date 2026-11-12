@@ -20,16 +20,22 @@ def test_cli_writes_a_visualization_of_one_sample(tmp_path):
     out = tmp_path / 'vis' / 'sample.png'
     calibrated_capture_dataset_cli.main([
         '--root', str(capture.root), '--mask-dir', str(capture.mask_dir),
-        '--height', '128', '--width', '160', '--crop-height', '96', '--crop-width', '80',
+        '--height', '128', '--width', '83', '--crop-height', '96', '--crop-width', '80',
         '--crop-offset-y', '0', '--out', str(out),
     ])
     with Image.open(out) as img:
         assert img.width > 0 and img.height > 0
 
 
+def gin_macros(path):
+    return dict(re.findall(r'^(\w+) = (\S+)', Path(path).read_text(), re.MULTILINE))
+
+
 def test_cli_defaults_to_the_framing_of_the_shipped_match_config():
-    config = Path('configs/match/save_camera_sweeps_calibrated.gin').read_text()
-    macro = {name: int(value) for name, value in re.findall(r'^(CAPTURE_\w+) = (-?\d+)', config, re.MULTILINE)}
+    config = gin_macros('configs/match/save_camera_sweeps_calibrated.gin')
+    pretrained = gin_macros('assets/pretrained_models/match/uv_res_1024/config_0.gin')
+    assert (config['CAPTURE_HEIGHT'], config['CAPTURE_WIDTH']) == ('%AVA_HEIGHT', '%AVA_WIDTH')
     args = calibrated_capture_dataset_cli.parse_args(['--root', 'capture', '--mask-dir', 'masks'])
-    assert (args.height, args.width) == (macro['CAPTURE_HEIGHT'], macro['CAPTURE_WIDTH'])
-    assert args.crop_offset_y == macro['CAPTURE_HEAD_CROP_OFFSET_Y']
+    assert (args.height, args.width) == (int(pretrained['AVA_HEIGHT']), int(pretrained['AVA_WIDTH']))
+    assert (args.crop_height, args.crop_width) == (int(pretrained['HEAD_CROP_HEIGHT']), int(pretrained['HEAD_CROP_WIDTH']))
+    assert args.crop_offset_y == int(config['CAPTURE_HEAD_CROP_OFFSET_Y'])

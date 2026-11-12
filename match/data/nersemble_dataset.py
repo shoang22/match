@@ -81,7 +81,6 @@ class NersembleSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
     SCENE_ROTATION = np.array([[1., 0, 0], [0, -1, 0], [0, 0, -1]], dtype=np.float32)
     SCENE_CENTER = np.array([0., 0., 0.], dtype=np.float32)
     SCALE_FACTOR = np.array(1., dtype=np.float32)
-    DATASET_TYPE = 'nersemble'
 
 
     def __init__(self, **kwargs):
