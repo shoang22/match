@@ -30,7 +30,9 @@ def test_registries_resolve_the_new_name():
 
 import synthetic_capture as synth  # noqa: E402
 
-HEIGHT, WIDTH = 128, 160          # native 160x200, scaled by 0.8
+# The native 200x160 (WxH) images are cut to Ava-256's aspect ratio, 2668/4096: 104x160 (160 * 0.651 = 104.2)
+CROPPED_WIDTH, CROPPED_HEIGHT = 104, 160
+HEIGHT, WIDTH = 128, 83           # the 104x160 crop, scaled by 0.8
 CROP_HEIGHT, CROP_WIDTH = 96, 80
 
 
@@ -58,11 +60,6 @@ def capture(tmp_path):
     return synth.write_capture(tmp_path / 'capture 1', tmp_path / 'masks', nframes=3)
 
 
-def test_the_dataset_names_its_prediction_output_folder_after_its_type(capture):
-    # TEMPEH's save_predictions writes each sample under <out>/<DATASET_TYPE>/...
-    assert build_dataset(capture).DATASET_TYPE == DATASET_NAME
-
-
 def test_length_equals_number_of_frames(capture):
     assert len(build_dataset(capture)) == 3
 
@@ -87,14 +84,6 @@ def test_frames_missing_an_image_or_a_mask_are_flagged_and_skipped(tmp_path, cap
     # 12 cameras for 12 angles: frames 1 and 2 cannot be used, so indexing moves on to frame 0
     assert dataset[1]['frame'] == '000000'
     assert dataset[2]['frame'] == '000000'
-
-
-def test_indexing_raises_instead_of_retrying_forever_when_no_frame_is_loadable(tmp_path):
-    capture = synth.write_capture(tmp_path / 'capture', tmp_path / 'masks', nframes=2,
-                                  missing_masks={(0, 0), (1, 0)})
-    dataset = build_dataset(capture)
-    with pytest.raises(RuntimeError, match='No loadable frame'):
-        dataset[0]
 
 
 SLOT_LINE = re.compile(r'camera (\d+) -> slot (\d+) \[az (-?[\d.]+), el (-?[\d.]+)\], angular error ([\d.]+) deg')
@@ -308,12 +297,47 @@ def test_intrinsics_keep_the_calibrated_pixel_aspect_ratio(capture, sample):
     _, _, H, W = sample['image'].shape
     for view, camera in enumerate(sample['camera'].tolist()):
         fx, fy = sample['fxfycxcy'][view, :2].double().numpy() * [W, H]
-        assert fy / fx == pytest.approx(capture.cameras[camera].aspect_ratio, rel=1e-6)
+        # the resize scales each axis by its own (rounded) factor, here 128/160 and 83/104
+        resize = (HEIGHT / CROPPED_HEIGHT) / (WIDTH / CROPPED_WIDTH)
+        assert fy / fx == pytest.approx(capture.cameras[camera].aspect_ratio * resize, rel=1e-6)
 
 
-def test_a_resize_target_that_would_change_the_aspect_ratio_is_rejected(capture):
-    with pytest.raises(ValueError, match='aspect'):
-        build_dataset(capture, height=128, width=128)
+@pytest.mark.parametrize('width', [128, 160])  # square, and the native (uncropped) aspect ratio
+def test_a_resize_target_that_would_change_the_aspect_ratio_is_rejected(capture, width):
+    with pytest.raises(ValueError, match=r'aspect.*width=83'):
+        build_dataset(capture, height=128, width=width)
+
+
+def full_image_sample(capture, **overrides):
+    """A sample of the full (resized, not head-cropped) images at native scale."""
+    return build_dataset(capture, height=CROPPED_HEIGHT, width=CROPPED_WIDTH, head_crop=False, **overrides)[0]
+
+
+def test_images_are_cut_to_avas_aspect_ratio_centered_on_the_head(capture):
+    sample = full_image_sample(capture)
+    assert tuple(sample['image'].shape[-2:]) == (CROPPED_HEIGHT, CROPPED_WIDTH)
+    assert tuple(sample['mask'].shape[-2:]) == (CROPPED_HEIGHT, CROPPED_WIDTH)
+    head = to_sample_world(sample, synth.HEAD_CENTER_MM[None])
+    for view in range(len(sample['camera'])):
+        x, y = project(sample, view, head)[0]
+        assert x == pytest.approx(CROPPED_WIDTH / 2, abs=0.5)  # centered to the nearest pixel
+        assert 0 < y < CROPPED_HEIGHT  # full height: nothing to center
+
+
+def test_a_crop_around_a_head_near_the_image_border_stays_inside_the_image(capture):
+    # A head center 90 mm to the subject's left projects so far right in several views that a crop centered on
+    # it would extend past the right image border; those crops are shifted back inside instead.
+    sample = full_image_sample(capture, scene_center=(synth.HEAD_CENTER_MM + [90.0, 0.0, 0.0]).tolist())
+    assert tuple(sample['image'].shape[-2:]) == (CROPPED_HEIGHT, CROPPED_WIDTH)
+    head_x = np.array([project(sample, view, np.zeros((1, 3)))[0, 0] for view in range(len(sample['camera']))])
+    assert (head_x > CROPPED_WIDTH / 2 + 1).any(), head_x  # shifted crops: the head is off-center
+    markers = to_sample_world(sample, synth.MARKERS_MM)
+    for view in range(len(sample['camera'])):  # intrinsics follow the shifted crops
+        expected = project(sample, view, markers)
+        for channel in range(3):
+            if 3 < expected[channel][0] < CROPPED_WIDTH - 3:
+                measured = centroid(sample['image'][view, channel])
+                np.testing.assert_allclose(measured, expected[channel], atol=MARKER_TOLERANCE_PX)
 
 
 def test_undistortion_keeps_image_size_and_intrinsics(tmp_path, capture, sample):
@@ -372,8 +396,9 @@ UV_COLOR = (200, 40, 90)
 
 
 def write_uv_maps(uv_dir, capture_name, frames, missing=()):
-    """TEMPEH's layout: <uv_dir>/<subject>/<sequence>/<frame>/uv_cam<id>.png, flat-colored, native size."""
-    uv = np.empty((synth.NATIVE_HEIGHT, synth.NATIVE_WIDTH, 3), np.uint8)
+    """TEMPEH's layout: <uv_dir>/<subject>/<sequence>/<frame>/uv_cam<id>.png, flat-colored, at the size of the
+    cropped images."""
+    uv = np.empty((CROPPED_HEIGHT, CROPPED_WIDTH, 3), np.uint8)
     uv[:] = UV_COLOR
     for frame in frames:
         folder = Path(uv_dir, capture_name, capture_name, f'{frame:06d}')
@@ -390,19 +415,15 @@ def test_uv_maps_from_the_configured_directory_reach_the_sample(tmp_path, captur
         np.testing.assert_allclose(uv[:, channel], value / 255, atol=1e-6)
 
 
-def test_a_missing_uv_map_skips_the_frame_instead_of_zero_filling(tmp_path, capture, caplog):
-    write_uv_maps(tmp_path / 'uv', capture.root.name, frames=[0, 1], missing={(0, 5)})
-    dataset = build_dataset(capture, uv_directory=str(tmp_path / 'uv'), nframes=2)
+def test_a_missing_uv_map_of_an_input_view_is_zero_filled_with_a_warning(tmp_path, capture, caplog):
+    write_uv_maps(tmp_path / 'uv', capture.root.name, frames=[0], missing={(0, 5)})
+    dataset = build_dataset(capture, uv_directory=str(tmp_path / 'uv'), nframes=1)
 
     with caplog.at_level(logging.WARNING):
         sample = dataset[0]
-    assert sample['frame'] == '000001'
-    assert (sample['uv'] > 0).all()
-    assert any('000000' in r.getMessage() and 'uv_cam5.png' in r.getMessage() for r in caplog.records)
-
-
-def test_no_frame_is_returned_with_a_zero_filled_uv_map(tmp_path, capture):
-    write_uv_maps(tmp_path / 'uv', capture.root.name, frames=[0], missing={(0, 5)})
-    dataset = build_dataset(capture, uv_directory=str(tmp_path / 'uv'), nframes=1)
-    with pytest.raises(RuntimeError, match='No loadable frame'):
-        dataset[0]
+    assert sample['frame'] == '000000'
+    view = sample['camera'].tolist().index(5)
+    assert (sample['uv'][view] == 0).all()
+    assert (sample['uv'][view + 1 if view == 0 else 0] > 0).all()
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any('000000-5' in w and 'zeros' in w for w in warnings), warnings

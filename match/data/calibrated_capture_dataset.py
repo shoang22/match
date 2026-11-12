@@ -6,6 +6,10 @@ A capture folder contains:
 
 Foreground masks come from a separate folder (`mask_directory`) with the same
 file names as the images.
+
+Each image is undistorted and then cropped to Ava-256's aspect ratio around the
+head, so the dataset's "full image" is framed like an Ava image and TEMPEH and
+MATCH can use their Ava settings.
 """
 import logging
 import re
@@ -16,7 +20,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from match.data import base_dataset, camera_calibration
+from match.data import ava256_dataset, base_dataset, camera_calibration
 from match.utils import data_util
 
 logger = logging.getLogger(__name__)
@@ -53,13 +57,7 @@ class CalibratedSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
             subject's left, y down, z toward the back of the head). Identity by default.
     """
 
-    # TEMPEH output folder name (see the base class); here it happens to equal the registry key
-    DATASET_TYPE = 'calibrated'
     NUM_VERTS = 5741  # same as the Ava-256 dataset, so batches can mix both
-    # A missing TEMPEH UV map skips the frame rather than feeding MATCH zeros
-    ZERO_FILL_MISSING_UV = False
-    # Indexing gives up with a RuntimeError once every frame has been skipped, instead of retrying forever
-    BOUNDED_RETRIES = True
 
     def __init__(self, capture: CalibratedCapture, scale_factor: float = 1 / 1000,
                  scene_center: list | None = None, scene_rotation: list | None = None, **kwargs):
@@ -70,6 +68,7 @@ class CalibratedSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
         self.scene_center_override = scene_center
         self.scene_rotation_override = scene_rotation
         self._undistort_maps = {}  # camera id -> (map_x, map_y), built on first use
+        self.crop_origins = {}  # camera id -> (left, top) of its Ava-aspect crop in the native image
         super().__init__(capture=capture, **kwargs)
         self._log_camera_slots()
 
@@ -98,19 +97,22 @@ class CalibratedSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
 
     def load_metadata(self):
         self.calibration = {str(i): c for i, c in camera_calibration.read_calibration(self.dir).items()}
-        self._check_resize_target()
-        self._load_frame_list()
-        self._set_scene_normalization()
-
-    def _check_resize_target(self):
         sizes = {(c.width, c.height) for c in self.calibration.values()}
         if len(sizes) != 1:
             raise ValueError(f'All cameras of a capture must share one native size; {self.dir} has {sorted(sizes)}')
-        native_width, native_height = sizes.pop()
-        aspect_preserving_width = self.height * native_width / native_height
+        self.native_width, self.native_height = sizes.pop()
+        self.crop_width, self.crop_height = ava_aspect_crop_size(self.native_width, self.native_height)
+        self._check_resize_target()
+        self._load_frame_list()
+        self._set_scene_normalization()
+        self._place_crops()
+
+    def _check_resize_target(self):
+        aspect_preserving_width = self.height * self.crop_width / self.crop_height
         if abs(self.width - aspect_preserving_width) > 1:
-            raise ValueError(f'height={self.height}, width={self.width} would change the native aspect ratio '
-                             f'of {self.dir} ({native_width}x{native_height}); at this height use '
+            raise ValueError(f'height={self.height}, width={self.width} would change the aspect ratio of '
+                             f'{self.dir}\'s images, which are cropped to Ava-256\'s ({self.crop_width}x'
+                             f'{self.crop_height} of {self.native_width}x{self.native_height}); at this height use '
                              f'width={round(aspect_preserving_width)}')
 
     def _load_frame_list(self):
@@ -156,22 +158,34 @@ class CalibratedSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
         self.SCALE_FACTOR = np.array(self.scale_factor, dtype=np.float32)
         self.SCENE_CENTER = (self.scale_factor * rotation @ self.head_center).astype(np.float32)
 
+    def _place_crops(self):
+        """Centers each camera's crop on the head center's projection, shifted to stay inside the image."""
+        for cam, c in self.calibration.items():
+            R, t = c.extrin[:, :3], c.extrin[:, 3]
+            u, v, w = c.K @ (R @ self.head_center + t)
+            self.crop_origins[cam] = tuple(
+                int(np.clip(round(center - (size - 1) / 2), 0, native - size))  # OpenCV pixel convention
+                for center, size, native in ((u / w, self.crop_width, self.native_width),
+                                             (v / w, self.crop_height, self.native_height)))
+
     def get_krt_dict(self):
-        """Images are undistorted at load time (`to_pinhole`), so the reported distortion is zero."""
+        """Intrinsics of the undistorted (`to_pinhole`) and cropped images, so the reported distortion is zero."""
         krt = {}
         for cam, c in self.calibration.items():
             intrin = c.K.copy()
             intrin[:2, 2] += 0.5  # OpenCV puts the top-left pixel center at 0, MATCH at 0.5
+            intrin[:2, 2] -= self.crop_origins[cam]
             krt[cam] = dict(intrin=intrin, extrin=c.extrin, dist=np.zeros(5))
         return krt
 
     @property
     def height_original(self) -> int:
-        return next(iter(self.calibration.values())).height
+        """Height of the images as loaded: after the Ava-aspect crop."""
+        return self.crop_height
 
     @property
     def width_original(self) -> int:
-        return next(iter(self.calibration.values())).width
+        return self.crop_width
 
     def get_frameid(self, idx: int) -> str:
         return self.frame_ids[idx]
@@ -202,7 +216,7 @@ class CalibratedSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
         path = self.image_path(frame_id, camera_id)
         with Image.open(path) as img:
             img = np.asarray(img.convert('RGB'))
-        return self.to_pinhole(self._check_native_size(img, path), camera_id)
+        return self.crop(self.to_pinhole(self._check_native_size(img, path), camera_id), camera_id)
 
     def load_fg_mask(self, frame_id: str, camera_id: str) -> np.ndarray:
         """uint8 HxWx1, 0..255. Uses the first channel of multi-channel masks.
@@ -219,7 +233,7 @@ class CalibratedSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
         if mask.dtype != np.uint8:
             raise ValueError(f'Foreground mask {path} must be 8-bit, got {mask.dtype}')
         mask = mask[..., :1] if mask.ndim == 3 else mask[..., None]
-        return self.to_pinhole(self._check_native_size(mask, path), camera_id)
+        return self.crop(self.to_pinhole(self._check_native_size(mask, path), camera_id), camera_id)
 
     def load_sg(self, frame_id: str, camera_id: str):
         return None  # no Sapiens part maps; configs set require_segmentation=False
@@ -237,6 +251,11 @@ class CalibratedSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
                                 borderMode=cv2.BORDER_CONSTANT, borderValue=0)
         return undistorted.reshape(image.shape)  # cv2 drops a trailing channel axis of size 1
 
+    def crop(self, image: np.ndarray, camera_id: str) -> np.ndarray:
+        """Cuts the camera's Ava-aspect crop out of an undistorted native-size image or mask."""
+        left, top = self.crop_origins[camera_id]
+        return image[top:top + self.crop_height, left:left + self.crop_width]
+
     def _undistort_map(self, camera_id: str):
         if camera_id not in self._undistort_maps:
             c = self.calibration[camera_id]
@@ -246,10 +265,18 @@ class CalibratedSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
         return self._undistort_maps[camera_id]
 
     def _check_native_size(self, image: np.ndarray, path: Path) -> np.ndarray:
-        if image.shape[:2] != (self.height_original, self.width_original):
+        if image.shape[:2] != (self.native_height, self.native_width):
             raise ValueError(f'{path} is {image.shape[1]}x{image.shape[0]}, but the calibration says '
-                             f'{self.width_original}x{self.height_original}')
+                             f'{self.native_width}x{self.native_height}')
         return image
+
+
+def ava_aspect_crop_size(native_width: int, native_height: int) -> tuple:
+    """(width, height) of the largest window with Ava-256's aspect ratio that fits the native image."""
+    ava_aspect = ava256_dataset.AVA_NATIVE_WIDTH / ava256_dataset.AVA_NATIVE_HEIGHT
+    if native_width / native_height > ava_aspect:
+        return round(native_height * ava_aspect), native_height
+    return native_width, round(native_width / ava_aspect)
 
 
 def optical_axes_center(extrinsics) -> np.ndarray:

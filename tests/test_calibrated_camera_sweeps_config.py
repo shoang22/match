@@ -26,8 +26,9 @@ PRETRAINED_CAMERA_ANGLES = synth.AVA_CAMERA_ANGLES
 
 @pytest.fixture
 def val_loader_params(tmp_path):
-    """The config's val_loader_params with only the path macros (and, for the tiny synthetic
-    capture, the resize target) rebound."""
+    """The config's val_loader_params with only the path macros and, for the tiny synthetic capture, the height
+    rebound: its images are cut to 104x160 (Ava's aspect ratio, rounded), which is 512 px wide (the head-crop
+    width) at a height of 788 rather than Ava's 786."""
     capture = synth.write_capture(tmp_path / 'capture 1', tmp_path / 'masks', nframes=2)
     write_uv_maps(tmp_path / 'tempeh' / 'calibrated', capture.root.name, frames=[0, 1])
     write_coarse_meshes(tmp_path / 'tempeh' / 'calibrated', capture.root.name, frames=[0, 1])
@@ -37,8 +38,7 @@ def val_loader_params(tmp_path):
         bindings=[f'CAPTURE_ROOT = "{capture.root}"',
                   f'CAPTURE_MASK_DIR = "{capture.mask_dir}"',
                   f'CAPTURE_TEMPEH_DIR = "{tmp_path / "tempeh" / "calibrated"}"',
-                  f'CAPTURE_HEIGHT = {synth.NATIVE_HEIGHT * 4}',
-                  f'CAPTURE_WIDTH = {synth.NATIVE_WIDTH * 4}'],
+                  'CAPTURE_HEIGHT = 788'],
         skip_unknown=True)
     try:
         yield Options().val_loader_params

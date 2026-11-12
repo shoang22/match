@@ -75,19 +75,6 @@ class BaseSingleCaptureDataset(torch.utils.data.Dataset):
     SCALE_FACTOR = np.array(1., dtype=np.float32) 
     SCENE_CENTER = np.array([0., 0., 0.], dtype=np.float32)
 
-    # Name of the dataset type, e.g. 'ava-256'. Prediction stages (TEMPEH save_predictions) write each sample's
-    # outputs under a folder with this name. It is the output folder name, kept separate from the registry key
-    # (`match.data.get_dataset_cls`, e.g. 'ava256' vs 'ava-256') so existing output paths stay the same.
-    DATASET_TYPE: str = None
-
-    # With a `uv_directory` configured, a UV map that fails to load is replaced by zeros when True. When False,
-    # the error propagates; a missing file marks the frame/camera invalid and the sample is skipped.
-    ZERO_FILL_MISSING_UV: bool = True
-
-    # Indexing skips to the next frame on a SkippableError. When False, it retries forever (Ava, NeRSemble).
-    # When True, it tries each frame at most once and then raises a RuntimeError instead of hanging.
-    BOUNDED_RETRIES: bool = False
-
     PER_VIEW_KEYS = ['C2W', 'fxfycxcy', 'image', 'uv', 'sg_parts', 'mask', 'camera', 'bboxs']
 
 
@@ -133,6 +120,7 @@ class BaseSingleCaptureDataset(torch.utils.data.Dataset):
         self.head_crop_offset_y = head_crop_offset_y
         self.verts_pad_to_n = verts_pad_to_n
         self.extra_camera_angles = extra_camera_angles
+        self.zero_filled_uv_views = 0  # input views whose UV map failed to load, see warn_zero_filled_uv
         self.skip_sequences = skip_sequences
         self.require_verts = require_verts
         self.require_segmentation = require_segmentation
@@ -213,6 +201,17 @@ class BaseSingleCaptureDataset(torch.utils.data.Dataset):
                 raise data_util.SkippableError(f'Couldnt find coarse mesh prediction under path {path}.')
         return verts
         
+    def warn_zero_filled_uv(self, frame_id: str, camera_id: str, error: Exception):
+        """Warns that an input view's UV map failed to load and is replaced by zeros.
+
+        Warns on the 1st, 10th, 100th, ... such view of this capture, so a wrong uv_directory doesn't flood the log.
+        """
+        self.zero_filled_uv_views += 1
+        n = self.zero_filled_uv_views
+        if n == 10 ** (len(str(n)) - 1):
+            logging.warning(f'UV map of input view {self.sid}-{frame_id}-{camera_id} failed to load ({error}); '
+                            f'using zeros. {n} input view(s) of {self.dir} zero-filled so far.')
+
     def load_uv(self, frame_id:str, camera_id:str)->np.ndarray:
         if self.uv_directory is None:
             return None
@@ -285,11 +284,9 @@ class BaseSingleCaptureDataset(torch.utils.data.Dataset):
                 try:
                     uv = self.load_uv(frame_id=frame_id, camera_id=camera_id)
                 except Exception as e:
-                    if not self.ZERO_FILL_MISSING_UV:
-                        raise
-                    # if not camera_id in extra_camera_ids:  # don't need the uvmaps for extra cameras
-                    #     print(f'WARNING: DIDNT FIND UVMAP OF INPUT IMAGE: {self.capture.sid}-{frame_id}-{camera_id}')
                     uv = np.zeros_like(img)
+                    if camera_id in camera_ids:  # extra cameras don't need UV maps and usually have none
+                        self.warn_zero_filled_uv(frame_id, camera_id, e)
 
                 sg = self.load_sg(frame_id=frame_id, camera_id=camera_id)
                 if sg is None:
@@ -486,7 +483,7 @@ class BaseSingleCaptureDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx: int) -> Optional[Dict[str, Union[np.ndarray, int, str]]]:
         exception_counter = 0
-        while not self.BOUNDED_RETRIES or exception_counter < len(self):
+        while True:
             try:
                 frame_id = self.get_frameid((idx+exception_counter) % len(self))
                 if 'ALL' in self.invalid_frame_cameras[frame_id]:
@@ -496,9 +493,8 @@ class BaseSingleCaptureDataset(torch.utils.data.Dataset):
                 return self.fetch_data_from_disk(frame_id=frame_id, camera_ids=camera_ids, extra_camera_ids=extra_camera_ids)
             except data_util.SkippableError as e:
                 logging.warning(f'Skippable error in loading sample {self.dir} {frame_id} {idx+exception_counter} ({exception_counter} Retries):\n{e}\nRetrying next sample ...')
-                exception_counter += 1
-        raise RuntimeError(f'No loadable frame in {self.dir}: all {len(self)} frames were skipped')
-
+                exception_counter += 1                
+    
     def get_image_path(self, frame_id:str, camera_id:str):
         raise NotImplementedError
 
@@ -521,10 +517,6 @@ class BaseMultiCaptureDataset(torch.utils.data.Dataset):
     """
 
     SINGLE_CAPTURE_DATASET_CLS = BaseSingleCaptureDataset
-
-    @property
-    def DATASET_TYPE(self) -> str:
-        return self.SINGLE_CAPTURE_DATASET_CLS.DATASET_TYPE
 
     def __init__(
         self,

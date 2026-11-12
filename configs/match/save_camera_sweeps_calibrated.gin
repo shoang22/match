@@ -21,18 +21,18 @@ OUT_DIR = 'experiments/match/calibrated'
 NFRAMES = 1                # number of frames to predict for; -1: all
 CAPTURE_FRAME_STRIDE = 1
 
-# --- framing, tuned for 1024x1024 images, focal length ~2400 px, head ~1 m from the cameras ---
-# Resize 1024x1024 to 800x800 (aspect preserved), then the pretrained 640x512 head crop (HEAD_CROP_HEIGHT/WIDTH from
-# config_0.gin). At 800 a 200 mm head is ~375 px wide, as in Ava's 786x512 input; the head's mask fills ~72% of the
-# crop width (Ava: ~75%).
-CAPTURE_HEIGHT = 800
-CAPTURE_WIDTH = 800
+# --- framing ---
+# The dataset cuts each image to Ava-256's aspect ratio around the head (1024x1024 -> 667 wide x 1024 tall), so the
+# pretrained Ava image size and 640x512 head crop (from config_0.gin) apply. For 1024x1024 images with a focal
+# length of ~2400 px and the head ~1 m away, a 200 mm head is then ~370 px wide, as in Ava's 786x512 input.
+CAPTURE_HEIGHT = %AVA_HEIGHT
+CAPTURE_WIDTH = %AVA_WIDTH
 # The pretrained -64 compensates for Ava's head-pose point sitting low on the face. Here the crop is centered on the
 # point closest to all optical axes, which projects near the mouth/chin, and the raw images leave only ~70 px (of
-# 1024) above the hair in several views. With -64 the crop cut off the top of the head in cameras 10 and 11 (they
-# look up from below). -128 moves the crop up until it clamps at the image top in 11 of 12 views, which keeps the
-# whole head in every view of `background 1` (smallest margin above the hair: 14 px). Going further up changes
-# nothing, as the crop clamps rather than pads.
+# 1024) above the hair in several views. On `background 1` with -64, the hair reaches the top edge of the crop in
+# cameras 10 and 11 (they look up from below). -128 moves the crop up until it clamps at the image top in every
+# view, leaving at least 14 px above the hair (Ava with -64: 71 px). Going further up changes nothing, as the crop
+# clamps rather than pads.
 CAPTURE_HEAD_CROP_OFFSET_Y = -128
 
 condor_name/join_strings.strings = ['.save_camera_sweeps-calibrated-', %CKPT]

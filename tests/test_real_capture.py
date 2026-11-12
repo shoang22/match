@@ -28,7 +28,7 @@ if not Path('assets').exists():
 from match import data  # noqa: E402
 
 # configs/match/save_camera_sweeps_calibrated.gin
-HEIGHT, WIDTH = 800, 800
+HEIGHT, WIDTH = 786, 512  # Ava-256 size; the dataset cuts the images to Ava's aspect ratio
 CROP_HEIGHT, CROP_WIDTH, CROP_OFFSET_Y = 640, 512, -128
 AVA_CAMERA_ANGLES = [[0, 0], [0, -15], [20, 0], [20, 36], [20, -15], [-20, 0], [-20, 36], [-20, -15],
                      [40, -5], [40, 25], [-40, -5], [-40, 25]]

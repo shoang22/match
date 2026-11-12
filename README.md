@@ -89,6 +89,7 @@ One capture folder is one subject and one sequence. Folder names may contain spa
   `fu u0 v0 ar s  k1 k2 p1 p2 k3  qw qx qy qz  tx ty tz  width height`
   - Intrinsics: `K = [[fu, s, u0], [0, fu*ar, v0], [0, 0, 1]]`, OpenCV pixel convention. Nonzero skew `s` raises an error.
   - Distortion: OpenCV's 5-coefficient model. The dataset undistorts images and masks at load time with `K` kept as is, so both models see pinhole cameras.
+  - After undistorting, the dataset cuts each image and mask to Ava-256's aspect ratio (width/height 0.651), centered on the head where the image allows: 1024×1024 becomes 667×1024. Both models then use their Ava image sizes.
   - Extrinsics: the quaternion (scalar first) and `t` give `[R | t]`, which maps **world to camera**.
   - Units: the translation is in mm. `scale_factor` (default `1/1000`) converts to meters.
   - `width height` is the native image size. All cameras of a capture must share it.
@@ -119,8 +120,8 @@ Use the same capture, masks, frame count and stride in both configs. Run them in
 PYTHONPATH=$(pwd) python condor/run.py configs/tempeh/save_predictions_calibrated.yml
 PYOPENGL_PLATFORM=egl PYTHONPATH=$(pwd) python condor/run.py configs/match/save_camera_sweeps_calibrated.gin
 ```
-- TEMPEH writes `<out_dir>/calibrated/<subject>/<sequence>/<frame>/{verts.npy, uv_cam<ID>.png, vis.jpg}`. `verts.npy` is in the calibration's frame and units. The UV maps are rendered in the full, uncropped image.
-- MATCH writes `<OUT_DIR>/<frame>_input.jpg` (input grid), `<frame>_pred.jpg` (renders of the input views) and `<frame>_sweep.mp4`. A missing UV map makes the frame skippable rather than zero-filled.
+- TEMPEH writes `<out_dir>/calibrated/<subject>/<sequence>/<frame>/{verts.npy, uv_cam<ID>.png, vis.jpg}`. `verts.npy` is in the calibration's frame and units. The UV maps are rendered in the (Ava-aspect) image, as for Ava.
+- MATCH writes `<OUT_DIR>/<frame>_input.jpg` (input grid), `<frame>_pred.jpg` (renders of the input views) and `<frame>_sweep.mp4`. As for Ava and NeRSemble, an input view whose UV map is missing gets zeros; the dataset logs a warning on the 1st, 10th, 100th, ... such view.
 - Keep the gin config's path free of spaces: `condor/run.py` does not quote it. Paths inside the configs may contain spaces.
 
 Optional values, not in the shipped configs. Add them to the TEMPEH `--datasets` dict and to the MATCH `dataset_kwargs`:
@@ -128,10 +129,9 @@ Optional values, not in the shipped configs. Add them to the TEMPEH `--datasets`
 - `scene_rotation: [[...], [...], [...]]`, if the calibration's world frame is not front-facing.
 - `subject_id`, `sequence_id`, `scale_factor`.
 
-The framing values are tuned for 1024×1024 images, a focal length of about 2400 px and the head about 1 m from the cameras. For a different rig, change them so the head is about as large as in Ava:
-- TEMPEH: resize to 260×260 (a 200 mm head is about 120 px wide), then a 256×167 head crop with offset 0. The UV maps (`--uv-out-height/width`, 1024×1024) must keep the native aspect ratio.
-- MATCH: `CAPTURE_HEIGHT/WIDTH` resize to 800×800, then the pretrained 640×512 head crop with `CAPTURE_HEAD_CROP_OFFSET_Y = -128`. The pretrained −64 cut off the top of the head in the cameras that look up from below. The crop clamps to the image instead of padding, so a larger offset changes nothing once it reaches the top edge.
-- The resize must keep the native aspect ratio (the dataset raises an error otherwise).
+Framing uses the Ava quickstart's sizes on the Ava-aspect images: TEMPEH's 256×167 input with no head crop and 786×512 UV maps; MATCH's 786×512 image (`CAPTURE_HEIGHT/WIDTH`) and the pretrained 640×512 head crop. For 1024×1024 images, a focal length of about 2400 px and the head about 1 m from the cameras, this makes the head about as large as in Ava. For a rig where the head is much larger or smaller in the image, change the image sizes.
+- `CAPTURE_HEAD_CROP_OFFSET_Y = -128` instead of the pretrained −64: on `background 1` with −64, the hair reaches the top edge of the crop in the cameras that look up from below. The crop clamps to the image instead of padding, so a larger offset changes nothing once it reaches the top edge.
+- The resize must keep the aspect ratio of the cut images (the dataset raises an error otherwise).
 
 ### Debug CLI
 Load one sample on the CPU and save a figure of every view: the resized image with the head-crop box and the projected head center, the crop with its mask, and the mask alone. It also logs the camera-to-slot assignment. Its defaults match the MATCH config's framing.
@@ -224,14 +224,14 @@ A one-frame inference run on a real capture: interim masks, TEMPEH, then MATCH c
     ```bash
     PYTHONPATH=$(pwd) python condor/run.py configs/tempeh/save_predictions_calibrated.yml
     ```
-    Expect `verts.npy`, `vis.jpg` and 12 files `uv_cam0.png` … `uv_cam11.png` (1024×1024) in `<out_dir>/calibrated/background 1/background 1/000000/`. On `background 1`:
+    Expect `verts.npy`, `vis.jpg` and 12 files `uv_cam0.png` … `uv_cam11.png` (786×512, framed like the dataset's 667×1024 images) in `<out_dir>/calibrated/background 1/background 1/000000/`. The run took 20 s. On `background 1`:
     - The coarse mesh, shifted by the head center and scaled to meters, has a bounding box of 0.20 × 0.34 × 0.24 m centered within 12 mm of the origin. The 0.34 m height includes the neck; Ava-256's quickstart mesh is 0.22 × 0.33 × 0.27 m.
-    - 98–99% of each UV map's covered pixels fall inside the Sapiens foreground mask.
+    - 98–99% of each UV map's covered pixels fall inside the Sapiens foreground mask (undistorted and cut like the images).
 3. MATCH. Set `CAPTURE_ROOT`, `CAPTURE_MASK_DIR`, `CAPTURE_TEMPEH_DIR` (TEMPEH's `out_dir` + `/calibrated`) and `OUT_DIR` in `configs/match/save_camera_sweeps_calibrated.gin`, then:
     ```bash
     PYOPENGL_PLATFORM=egl PYTHONPATH=$(pwd) python condor/run.py configs/match/save_camera_sweeps_calibrated.gin
     ```
-    Expect `000000_input.jpg`, `000000_pred.jpg` and `000000_sweep.mp4` in `OUT_DIR`, with a single pass over the dataset (`Dataset [calibrated_val]: 1/1`) and no skipped frames. The run took about 2 min end to end, 68 s of it on the one sample (200-frame sweep render included). On `background 1` the renders show the whole head in all 12 views, with a slightly cool color cast and noisy foliage and shirt at the bottom of the crop.
+    Expect `000000_input.jpg`, `000000_pred.jpg` and `000000_sweep.mp4` in `OUT_DIR`, with a single pass over the dataset (`Dataset [calibrated_val]: 1/1`) and no skipped frames or zero-filled UV maps. The run took 96 s end to end, 41 s of it on the one sample (200-frame sweep render included). On `background 1` the renders show the whole head in all 12 views, with a slightly cool color cast and a dark, noisy shirt and foliage at the bottom of the crop.
 
 When the dataset is built (MATCH run, debug CLI), it logs which camera fills each of the pretrained model's 12 camera-angle slots and how far off it is. For `background 1`:
 ```
