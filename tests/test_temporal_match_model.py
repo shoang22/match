@@ -171,6 +171,20 @@ def test_only_the_temporal_parameters_train():
       n_blocks * (dim + 4 * dim * dim + 4 * dim) + clip_len * dim)
 
 
+@pytest.mark.parametrize('grad_checkpoint', [False, True])
+def test_a_clip_loss_backpropagates_into_the_temporal_output_projections_only(frames, grad_checkpoint):
+  model = build(temporal=True, clip_len=3, grad_checkpoint=grad_checkpoint).train()
+
+  model.forward_gaussians(as_clip(frames))['xyz'].square().mean().backward()
+
+  grads = {n: p.grad for n, p in model.named_parameters()}
+  # At init the zero output projections are the only temporal weights with a gradient: they gate the rest.
+  output_projections = {n for n in grads if n.endswith('temporal_uv.attn.wo.weight')}
+  assert len(output_projections) == 2
+  assert all(grads[n].abs().max() > 0 for n in output_projections)
+  assert all(g is None for n, g in grads.items() if n not in temporal_parameter_names(model))
+
+
 def test_per_frame_match_trains_every_parameter():
   model = build(temporal=False)
   assert all(p.requires_grad for p in model.parameters())
