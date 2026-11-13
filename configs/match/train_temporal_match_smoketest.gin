@@ -1,0 +1,61 @@
+# Single-GPU smoke test of temporal MATCH clip training: a few clip steps, one validation pass and one checkpoint. It checks that
+# the training loop runs on clips; it is not a real training.
+#
+# PYOPENGL_PLATFORM=egl PYTHONPATH=$(pwd) torchrun --standalone --nnodes=1 --nproc-per-node=1 scripts/match/train_match.py --gin_configs configs/match/train_temporal_match_smoketest.gin
+#
+# Everything but the data is configs/match/train_temporal_match.gin (T=4, 12 input and 12 render views, gradient checkpointing,
+# spatial weights and Sapiens frozen, pretrained weights). No Ava-256 training subject is on disk, so it TRAINS ON A HELD-OUT
+# SUBJECT: TCE049's SEN_a_good_morrow_to_you_my_boy segment, the only segment with TEMPEH predictions at every frame (40 frames,
+# configs/tempeh/save_predictions_seq_SEN_a_good_morrow.yml). That is acceptable only here; the default config excludes every
+# held-out subject from training. TCE049 has no kinematic tracking or Sapiens segmentations on disk, so the GT vertices are
+# zeros and the geometry losses are off.
+
+include 'configs/match/train_temporal_match.gin'
+NAME = 'temporal_match_smoketest'
+NUM_WORKERS = 2
+
+Options:
+  max_train_steps = 4
+  save_freq = 4
+  eval_freq = 4
+  early_eval_freq = 4
+  max_val_steps = 1
+  n_vissamples = 1
+  log_freq = 1
+  lr_scheduler = {
+    'name': 'constant_warmup',
+    'num_warmup_steps': 2,
+    'total_steps': 4,
+  }
+  mesh_vert_weight = 0.0  # no kinematic tracking -> GT vertices are zeros
+  xyz_weight = 0.0
+
+  train_loader_params = {
+    'cls': 'ava256',
+    'kwargs': {
+      'dataloader_kwargs': {
+        'batch_size': %BATCH_SIZE,
+        'num_workers': %NUM_WORKERS,
+      },
+      'dataset_kwargs': {
+        'root_path': %AVA_ROOT,
+        'height': %AVA_HEIGHT,
+        'width': %AVA_WIDTH,
+        'camera_angles': %AVA_CAMERA_ANGLES,
+        'uv_directory': %AVA_VAL_UV_DIR,
+        'coarse_mesh_directory': %AVA_VAL_UV_DIR,
+        'frame_stride': 1,
+        'clip_length': %CLIP_LENGTH,
+        'clip_stride': %CLIP_STRIDE,
+        'only_subjects': [%VAL_SUBJECT],
+        'segment': %VAL_SEGMENT,
+        'head_crop': %HEAD_CROP,
+        'head_crop_height': %HEAD_CROP_HEIGHT,
+        'head_crop_width': %HEAD_CROP_WIDTH,
+        'head_crop_offset_y': %HEAD_CROP_OFFSET_Y,
+        'training': None,  # TCE049 is held out; None disables the train/val split for this smoke test only
+        'require_segmentation': False,
+        'require_verts': False,
+      }
+    }
+  }

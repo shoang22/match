@@ -846,6 +846,8 @@ class MatchRunner:
         mem = psutil.virtual_memory()
         logs["Resources/mem_total(GB)"] = mem.total / (1024**3)
         logs["Resources/mem_avail(GB)"] = mem.available / (1024**3)
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats(accelerator.device)
 
         with accelerator.accumulate(model):
             outputs = model(
@@ -874,7 +876,11 @@ class MatchRunner:
         
         if accelerator.sync_gradients:
             self.global_update_step += 1
-        
+        if torch.cuda.is_available():
+            # this process's peak tensor memory during the step (the nvml figure above is all processes, now)
+            logs["Resources/GPU/peak_allocated(GB)"] = torch.cuda.max_memory_allocated(accelerator.device) / (1024**3)
+            logs["Resources/GPU/peak_reserved(GB)"] = torch.cuda.max_memory_reserved(accelerator.device) / (1024**3)
+
         
         return logs
       

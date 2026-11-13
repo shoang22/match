@@ -180,3 +180,82 @@ def test_per_frame_training_still_resumes_the_pretrained_run(tmp_path):
 
   assert len(runner.accelerator.loaded) == 1
   assert runner.global_update_step == 860_000
+
+
+TRAIN_CONFIG = 'configs/match/train_temporal_match.gin'
+SMOKE_CONFIG = 'configs/match/train_temporal_match_smoketest.gin'
+
+
+def parsed_options(config):
+  """Options as scripts/match/train_match.py parses them from `config`."""
+  import gin
+  from match.options import Options
+  from match.utils import gin_util  # noqa: F401 (registers join_strings)
+  gin.clear_config()
+  try:
+    gin.parse_config_files_and_bindings([config], bindings=None, skip_unknown=True)
+    return Options()
+  finally:
+    gin.clear_config()
+
+
+def heldout_subjects() -> set[str]:
+  import json
+  with open('assets/ava256/validation_ids.json') as f:
+    return set(json.load(f))
+
+
+def subjects_kept(dataset_kwargs, subjects, root) -> set[str]:
+  """The subjects among `subjects` that the Ava-256 dataset keeps with `dataset_kwargs`'s subject split."""
+  from match.data.ava256_dataset import AvaMultiCaptureDataset
+  for i, sid in enumerate(sorted(subjects)):
+    (root / f'20230101--{i:04d}--{sid}' / 'decoder').mkdir(parents=True, exist_ok=True)
+  captures, dirs = AvaMultiCaptureDataset.folder_parser(str(root), training=dataset_kwargs.get('training'))
+  captures, _ = AvaMultiCaptureDataset.filter_captures(
+      str(root), captures, dirs, exclude_subjects=dataset_kwargs.get('exclude_subjects', []),
+      only_subjects=dataset_kwargs.get('only_subjects', []))
+  return {c.sid for c in captures}
+
+
+def test_the_default_training_config_fine_tunes_temporal_match_on_4_frame_clips_on_one_gpu():
+  opt = parsed_options(TRAIN_CONFIG)
+  dataset = opt.train_loader_params['kwargs']['dataset_kwargs']
+
+  assert opt.temporal and opt.clip_length == 4
+  assert dataset['clip_length'] == 4 and dataset['clip_stride'] in (1, 2) and dataset['frame_stride'] == 1
+  assert opt.grad_checkpoint
+  assert opt.temporal_freeze_spatial and opt.temporal_spatial_lr is None  # spatial weights frozen
+  assert opt.load_pretrained_model == 'assets/pretrained_models/match/uv_res_1024'
+  assert opt.load_pretrained_model_ckpt == 860_000
+  # MATCH's 12 input and 12 rendered views, as the pretrained model was trained
+  assert opt.num_input_views == opt.num_views == opt.num_render_views == 12
+  # a fine-tune from step 0 must not redo the pretrained run's geometry-only phase and LPIPS warmup
+  assert opt.geom_only_steps == 0 and opt.lpips_warmup_end == 0
+  assert opt.train_loader_params['kwargs']['dataloader_kwargs']['batch_size'] == 1
+
+
+def test_the_default_training_config_lists_the_heldout_subjects_and_never_trains_on_them(tmp_path):
+  opt = parsed_options(TRAIN_CONFIG)
+  dataset = opt.train_loader_params['kwargs']['dataset_kwargs']
+  training_subjects = {'AAN112', 'ZZZ001'}
+  everyone = heldout_subjects() | training_subjects
+
+  assert set(dataset['exclude_subjects']) == heldout_subjects()
+  assert subjects_kept(dataset, everyone, tmp_path) == training_subjects
+  for val in opt.val_loader_params:
+    assert 'clip_length' not in val['kwargs']['dataset_kwargs']  # validation scores single frames
+    assert subjects_kept(val['kwargs']['dataset_kwargs'], everyone, tmp_path) <= heldout_subjects()
+
+
+def test_the_smoke_config_trains_a_few_clip_steps_on_the_one_segment_with_tempeh_at_every_frame():
+  default, smoke = parsed_options(TRAIN_CONFIG), parsed_options(SMOKE_CONFIG)
+  dataset = smoke.train_loader_params['kwargs']['dataset_kwargs']
+
+  assert smoke.max_train_steps <= 10
+  assert dataset['only_subjects'] == ['TCE049'] and dataset['segment'] == 'SEN_a_good_morrow_to_you_my_boy'
+  assert dataset['uv_directory'] == 'data/tempeh_predictions/ava-256/seq_SEN_a_good_morrow/ava-256'
+  assert dataset['clip_length'] == 4 and dataset['frame_stride'] == 1
+  for k in ('temporal', 'clip_length', 'grad_checkpoint', 'temporal_freeze_spatial', 'load_pretrained_model',
+            'num_input_views', 'num_views', 'num_render_views', 'optimizer'):
+    assert getattr(smoke, k) == getattr(default, k), k
+  assert smoke.base_folder != default.base_folder
