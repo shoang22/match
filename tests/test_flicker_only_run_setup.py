@@ -57,6 +57,13 @@ def test_a_flicker_only_run_says_in_its_metrics_that_no_image_quality_scores_wer
                                           'input camera'}
 
 
+def test_the_geometric_jitter_averages_over_the_texel_region_it_is_given():
+    region = seq_metrics.TexelRegion('fitting_region_skin', None)
+    (jitter,) = [c for c in eval_sequence.build_metric_collectors(HELDOUT, jitter_region=region)
+                 if isinstance(c, seq_metrics.GeometricJitter)]
+    assert jitter.region is region
+
+
 def test_a_run_with_heldout_cameras_also_scores_image_quality():
     kinds = [type(c) for c in eval_sequence.build_metric_collectors(HELDOUT)]
     assert kinds == [seq_metrics.ImageMetrics, seq_metrics.TemporalMetrics, seq_metrics.GeometricJitter]

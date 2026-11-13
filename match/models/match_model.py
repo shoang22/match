@@ -1486,6 +1486,12 @@ class MatchModel(nn.Module):
     return self._masked_gaussian_geometry_loss_weights
 
 
+  def texels_in_vertex_group(self, group: str) -> torch.Tensor:
+    """(L,) bool over the masked Gaussians' texels: True where every vertex of the texel's triangle is in the
+    template's vertex group (e.g. 'fitting_region_skin', the face skin without eyes, mouth interior and ears)."""
+    in_group = self.template_vertex_group_weights[self.template_vertex_group_names.index(group)] > 0
+    return in_group[self.uv_grid_vert_ids_filtered].all(dim=1)
+
   @property
   def uv_grid_vert_ids_filtered(self) -> torch.Tensor:
     return self.template_triangles[

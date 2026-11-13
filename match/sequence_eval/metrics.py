@@ -183,29 +183,47 @@ class ImageQualityNotComputed:
         return {'quality_scores': f'not computed: no held-out cameras; the fixed view (cam {self.fixed_view_camera}) '
                                   'is an input camera'}
 
+class TexelRegion(NamedTuple):
+    """The texels a score averages over: a name for metrics.json and a (L,) bool mask over the masked texels."""
+    name: str
+    texels: torch.Tensor
+
+
 class GeometricJitter:
     """Frame-to-frame jitter of every texel's predicted position, split into the TEMPEH part and MATCH's offset.
 
     A texel's final position is the TEMPEH surface point at the texel ('tempeh_xyz' in the Gaussians, see
     MatchModel.forward_gaussians(return_tempeh_xyz=True)) plus the predicted offset. For each of the three,
-    the jitter of consecutive frames (t-1, t, t+1) is the mean over the texels of |x[t+1] - 2 x[t] + x[t-1]|
-    in mm (metric_util.geometric_jitter). The Gaussians are masked to the UV grid's valid texels, so every
-    texel they hold counts. Only the last three frames are kept, on the CPU.
+    the jitter of consecutive frames (t-1, t, t+1) is the mean over the region's texels of
+    |x[t+1] - 2 x[t] + x[t-1]| in mm (metric_util.geometric_jitter). The masked Gaussians hold the whole UV
+    grid (face, ears, eyes, mouth interior and, in the pretrained model's topology, neck and scalp), so the
+    sequence evaluation passes the face skin as the region (scripts/match/eval_sequence.py); without a region
+    every masked texel counts. Only the last three frames are kept, on the CPU.
 
     JSON section 'jitter':
       'units': 'mm'
+      'texels': {'region': name ('all' without a region), 'n_texels': texels averaged over, 'n_masked_texels'}
       'per_frame': {frame_id: {'previous_frame', 'next_frame', 'tempeh', 'offset', 'final'}}, keyed by the
         middle frame of each triple of consecutive source frames
       'summary': {'tempeh'|'offset'|'final': {'mean', 'worst_frames'}}, highest jitter first
     """
 
-    def __init__(self):
+    def __init__(self, region: TexelRegion = None):
+        self.region = region
+        self.n_masked_texels = None
         self.window = []  # [(frame_id, {source: (3, L) positions in mm})], the last three frames
         self.per_frame = {}
 
     def add_frame(self, ctx):
         final = ctx.gaussians['xyz'][0, 0, :, :, 0].detach().float().cpu() * MM_PER_WORLD_UNIT
         tempeh = ctx.gaussians['tempeh_xyz'][0, 0, :, :, 0].detach().float().cpu() * MM_PER_WORLD_UNIT
+        self.n_masked_texels = final.shape[-1]
+        if self.region is not None:
+            texels = self.region.texels.cpu()
+            if texels.shape != (self.n_masked_texels,):
+                raise ValueError(f'The {self.region.name} texel mask has shape {tuple(texels.shape)}, the masked '
+                                 f'Gaussians hold {self.n_masked_texels} texels')
+            final, tempeh = final[:, texels], tempeh[:, texels]
         self.window = self.window[-2:] + [(ctx.frame_id, {'tempeh': tempeh, 'offset': final - tempeh,
                                                           'final': final})]
         if len(self.window) < 3:
@@ -221,4 +239,7 @@ class GeometricJitter:
             source: summarize({f: e[source] for f, e in self.per_frame.items()}, higher_is_better=False)
             for source in JITTER_SOURCES
         }
-        return {'jitter': {'units': 'mm', 'per_frame': self.per_frame, 'summary': summary}}
+        texels = {'region': 'all', 'n_texels': self.n_masked_texels, 'n_masked_texels': self.n_masked_texels}
+        if self.region is not None:
+            texels.update(region=self.region.name, n_texels=int(self.region.texels.sum()))
+        return {'jitter': {'units': 'mm', 'texels': texels, 'per_frame': self.per_frame, 'summary': summary}}

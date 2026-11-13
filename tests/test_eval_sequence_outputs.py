@@ -174,6 +174,15 @@ def test_jitter_is_finite_for_every_source_on_every_triple_of_frames(run, metric
         assert all(is_finite_float(entry[s]) and entry[s] >= 0 for s in JITTER_SOURCES), entry
 
 
+def test_jitter_averages_over_the_face_skin_texels(metrics):
+    texels = metrics['jitter'].get('texels')
+    if texels is None:
+        pytest.skip('the run predates the jitter texel region; rerun it')
+    # The texels of uv_res_1024's grid whose triangle has every vertex in the fitting_region_skin vertex group
+    # (assets/ava256/vertex_groups_with_neck_and_scalp.json), out of every texel the masked Gaussians hold.
+    assert texels == {'region': 'fitting_region_skin', 'n_texels': 379_891, 'n_masked_texels': 1_048_528}
+
+
 def test_jitter_summary_has_the_mean_and_worst_frames(run, metrics):
     jitter = metrics['jitter']
     for source in JITTER_SOURCES:
