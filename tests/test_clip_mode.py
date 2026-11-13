@@ -79,6 +79,18 @@ def test_clips_never_cross_from_one_capture_into_the_next(tmp_path):
                      ('take2', ['000000', '000001'])]
 
 
+
+def test_a_clip_that_cannot_load_moves_on_to_the_next_clip_like_a_single_frame_does(tmp_path):
+    # Frame 2 lacks 7 of 12 cameras, too few for six angles: clips (1, 2) and (2, 3) can't load, and
+    # indexing moves on to the next clip, wrapping around to clip (0, 1), as the dataset does for single frames
+    capture = synth.write_capture(tmp_path / 'capture', tmp_path / 'masks', nframes=4,
+                                  missing_images={(2, cam) for cam in range(7)})
+    dataset = build_calibrated(capture, camera_angles=SIX_ANGLES, clip_length=2)
+    assert len(dataset) == 3
+    assert dataset[1]['frame'] == ['000000', '000001']
+    assert dataset[2]['frame'] == ['000000', '000001']
+
+
 from tce049 import AVA_ROOT, SEGMENT, SEGMENT_FRAMES  # noqa: E402
 
 needs_ava_data = pytest.mark.skipif(
