@@ -120,7 +120,6 @@ class BaseSingleCaptureDataset(torch.utils.data.Dataset):
         self.head_crop_offset_y = head_crop_offset_y
         self.verts_pad_to_n = verts_pad_to_n
         self.extra_camera_angles = extra_camera_angles
-        self.zero_filled_uv_views = 0  # input views whose UV map failed to load, see warn_zero_filled_uv
         self.skip_sequences = skip_sequences
         self.require_verts = require_verts
         self.require_segmentation = require_segmentation
@@ -201,17 +200,6 @@ class BaseSingleCaptureDataset(torch.utils.data.Dataset):
                 raise data_util.SkippableError(f'Couldnt find coarse mesh prediction under path {path}.')
         return verts
         
-    def warn_zero_filled_uv(self, frame_id: str, camera_id: str, error: Exception):
-        """Warns that an input view's UV map failed to load and is replaced by zeros.
-
-        Warns on the 1st, 10th, 100th, ... such view of this capture, so a wrong uv_directory doesn't flood the log.
-        """
-        self.zero_filled_uv_views += 1
-        n = self.zero_filled_uv_views
-        if n == 10 ** (len(str(n)) - 1):
-            logging.warning(f'UV map of input view {self.sid}-{frame_id}-{camera_id} failed to load ({error}); '
-                            f'using zeros. {n} input view(s) of {self.dir} zero-filled so far.')
-
     def load_uv(self, frame_id:str, camera_id:str)->np.ndarray:
         if self.uv_directory is None:
             return None
@@ -286,7 +274,7 @@ class BaseSingleCaptureDataset(torch.utils.data.Dataset):
                 except Exception as e:
                     uv = np.zeros_like(img)
                     if camera_id in camera_ids:  # extra cameras don't need UV maps and usually have none
-                        self.warn_zero_filled_uv(frame_id, camera_id, e)
+                        logging.warning(f'UV map of input view {self.sid}-{frame_id}-{camera_id} failed to load ({e}); using zeros.')
 
                 sg = self.load_sg(frame_id=frame_id, camera_id=camera_id)
                 if sg is None:
