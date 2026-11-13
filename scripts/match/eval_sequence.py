@@ -41,15 +41,17 @@ def build_panels(plan, opt) -> list[seq_panels.Panel]:
     """The grid's panels, in layout order (row-major)."""
     return [
         seq_panels.PredictionPanel(plan.fixed_view_camera),
-        seq_panels.RealPanel(plan.fixed_view_camera),
+        seq_panels.RealPanel(plan.fixed_view_camera, input_camera=plan.fixed_view_is_input),
         seq_panels.TempehMeshPanel(plan.fixed_view_camera, opt.template_mesh_path),
         seq_panels.OrbitPanel(plan.n_output_frames),  # loops from the config
     ]
 
 
-def build_metric_collectors() -> list[seq_metrics.MetricCollector]:
+def build_metric_collectors(plan) -> list[seq_metrics.MetricCollector]:
+    """Image quality is scored only at held-out cameras: at an input camera it would be no novel-view result."""
+    image_quality = [seq_metrics.ImageMetrics()] if plan.heldout_camera_ids else []
     # RAFT for the temporal metrics runs on the CPU (~2.5 s per pair): the model still holds the GPU.
-    return [seq_metrics.ImageMetrics(), seq_metrics.TemporalMetrics(device='cpu'), seq_metrics.GeometricJitter()]
+    return image_quality + [seq_metrics.TemporalMetrics(device='cpu'), seq_metrics.GeometricJitter()]
 
 
 def load_sequence(opt, heldout_camera_ids):
@@ -157,7 +159,7 @@ def eval_sequence(opt: Options, out_dir: str = None, heldout_camera_ids: list = 
     runner.eval()
 
     panels = build_panels(plan, opt)
-    collectors = build_metric_collectors()
+    collectors = build_metric_collectors(plan)
     video = seq_outputs.GridVideoWriter(out_dir, n_frames=plan.n_output_frames, fps=fps)
     preview = seq_outputs.GridVideoWriter(out_dir, n_frames=len(sequence), fps=preview_fps,
                                           name=seq_outputs.PREVIEW_VIDEO)
