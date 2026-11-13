@@ -36,6 +36,24 @@ def _sample_slice(value, i: int, n_samples: int):
   return value
 
 
+def temporal_trajectory_loss(trajectories: Tensor, texel_weights: Tensor | None = None) -> Tensor:
+  """Per clip, the masked mean over texels and frame triples of |x[t+1] - 2 x[t] + x[t-1]|^2.
+
+  trajectories: (B, T, L, C), each texel's value (e.g. position, colour) over a clip's T frames.
+  texel_weights: (L,) weight of each texel in the mean; 0 leaves a texel out. All texels count equally if None.
+  Returns (B,). Constant and linear trajectories cost 0, and so does a clip of fewer than 3 frames.
+  """
+  B, T, L, _ = trajectories.shape
+  if T < 3:
+    return trajectories.new_zeros(B)
+  second_diff = trajectories[:, 2:] - 2 * trajectories[:, 1:-1] + trajectories[:, :-2]  # (B, T-2, L, C)
+  squared = second_diff.square().sum(dim=-1)  # (B, T-2, L)
+  if texel_weights is None:
+    return squared.mean(dim=(1, 2))
+  texel_weights = texel_weights.to(squared)
+  return (squared * texel_weights).sum(dim=2).mean(dim=1) / texel_weights.sum()
+
+
 def optimizer_param_groups(model: nn.Module, opt: Options) -> list[dict]:
   """The trainable parameters of `model` as optimizer parameter groups.
 
