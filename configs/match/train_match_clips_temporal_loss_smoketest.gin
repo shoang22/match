@@ -1,0 +1,12 @@
+# Single-GPU smoke test of per-frame MATCH on clips with the temporal loss (#38): configs/match/train_temporal_match_smoketest.gin
+# (4 clip steps of T=4, 12 input and 12 render views, on TCE049's SEN segment, one validation pass and one checkpoint) without the
+# temporal sublayers and with the temporal loss. It checks the loop runs; it is not a real training.
+#
+# PYOPENGL_PLATFORM=egl PYTHONPATH=$(pwd) PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True torchrun --standalone --nnodes=1 --nproc-per-node=1 scripts/match/train_match.py --gin_configs configs/match/train_match_clips_temporal_loss_smoketest.gin
+#
+# Delete the output folder before rerunning (a run resumes its own checkpoint).
+
+include 'configs/match/train_temporal_match_smoketest.gin'
+include 'configs/match/per_frame_match_on_clips.gin'
+include 'configs/match/temporal_loss.gin'
+NAME = 'match_clips_temporal_loss_smoketest'

@@ -128,3 +128,67 @@ def test_the_temporal_loss_alone_trains_the_temporal_sublayers(frames):
   # temporal attention's output projections start at zero, so at init only they get a gradient
   wo_grads = [p.grad for n, p in model.named_parameters() if n.endswith('temporal_uv.attn.wo.weight')]
   assert wo_grads and all(g is not None and g.abs().max() > 0 for g in wo_grads)
+
+
+# --- Training configs ----------------------------------------------------------
+
+STAGE1_CONFIG = 'configs/match/train_temporal_match.gin'
+STAGE1_SMOKE_CONFIG = 'configs/match/train_temporal_match_smoketest.gin'
+TEMPORAL_CONFIG = 'configs/match/train_temporal_match_temporal_loss.gin'
+TEMPORAL_SMOKE_CONFIG = 'configs/match/train_temporal_match_temporal_loss_smoketest.gin'
+PER_FRAME_CONFIG = 'configs/match/train_match_clips_temporal_loss.gin'
+PER_FRAME_SMOKE_CONFIG = 'configs/match/train_match_clips_temporal_loss_smoketest.gin'
+
+
+def options(config):
+  from test_clip_training import parsed_options
+  return parsed_options(config)
+
+
+def test_stage_1_trains_without_the_temporal_loss():
+  assert options(STAGE1_CONFIG).temporal_loss_weight == 0
+
+
+@needs_assets
+def test_the_temporal_loss_config_is_stage_1_temporal_match_plus_the_temporal_loss():
+  stage1, opt = options(STAGE1_CONFIG), options(TEMPORAL_CONFIG)
+
+  assert opt.temporal_loss_weight > 0
+  assert opt.temporal and opt.temporal_freeze_spatial and opt.temporal_spatial_lr is None
+  for k in ('clip_length', 'train_loader_params', 'val_loader_params', 'optimizer', 'lr_scheduler',
+            'load_pretrained_model', 'load_pretrained_model_ckpt', 'grad_checkpoint', 'num_input_views',
+            'num_render_views', 'geom_only_steps', 'max_train_steps'):
+    assert getattr(opt, k) == getattr(stage1, k), k
+  assert opt.base_folder != stage1.base_folder
+
+
+@needs_assets
+def test_the_per_frame_config_fine_tunes_every_weight_of_per_frame_match_on_clips_with_the_temporal_loss():
+  temporal, opt = options(TEMPORAL_CONFIG), options(PER_FRAME_CONFIG)
+
+  assert not opt.temporal  # no temporal attention: nothing is frozen
+  assert opt.fine_tune  # start at step 0 from the pretrained weights, not the pretrained run's state
+  assert opt.temporal_loss_weight == temporal.temporal_loss_weight
+  assert opt.temporal_loss_rgb_weight == temporal.temporal_loss_rgb_weight
+  assert opt.train_loader_params['kwargs']['dataset_kwargs']['clip_length'] == 4
+  for k in ('train_loader_params', 'val_loader_params', 'load_pretrained_model', 'grad_checkpoint',
+            'num_input_views', 'num_render_views', 'max_train_steps'):
+    assert getattr(opt, k) == getattr(temporal, k), k
+  assert opt.base_folder not in (temporal.base_folder, options(STAGE1_CONFIG).base_folder)
+
+
+@needs_assets
+@pytest.mark.parametrize('config, smoke_config', [
+    (TEMPORAL_CONFIG, TEMPORAL_SMOKE_CONFIG), (PER_FRAME_CONFIG, PER_FRAME_SMOKE_CONFIG)],
+    ids=['temporal-attention', 'per-frame'])
+def test_each_smoke_config_is_its_config_on_the_stage_1_smoke_setup(config, smoke_config):
+  opt, smoke, stage1_smoke = options(config), options(smoke_config), options(STAGE1_SMOKE_CONFIG)
+
+  for k in ('temporal', 'fine_tune', 'temporal_loss_weight', 'temporal_loss_rgb_weight', 'optimizer',
+            'temporal_freeze_spatial', 'load_pretrained_model', 'grad_checkpoint', 'num_input_views',
+            'num_render_views'):
+    assert getattr(smoke, k) == getattr(opt, k), k
+  for k in ('train_loader_params', 'val_loader_params', 'max_train_steps', 'lr_scheduler', 'xyz_weight',
+            'mesh_vert_weight'):
+    assert getattr(smoke, k) == getattr(stage1_smoke, k), k
+  assert smoke.base_folder not in (opt.base_folder, stage1_smoke.base_folder)
