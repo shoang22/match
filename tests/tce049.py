@@ -28,3 +28,5 @@ HELDOUT_CAMERAS = {
     '402031': [75.6, -1.5],  # extrapolating
 }
 FIXED_VIEW_CAMERA = '402040'
+# The input camera at the [0, 0] input angle, the closest to frontal: the fixed view of the flicker-only run.
+FRONTAL_INPUT_CAMERA = '401875'

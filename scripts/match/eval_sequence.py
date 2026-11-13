@@ -1,6 +1,10 @@
 """Sequence evaluation of MATCH: an independent forward pass of the pretrained model on every frame of an
 Ava-256 segment, rendered from held-out cameras that are never inputs.
 
+Flicker-only run: with no held-out cameras (e.g. a calibrated capture whose cameras are all inputs), the
+configured input camera `fixed_view_input_camera` is the fixed view. The run scores flicker and geometric
+jitter there, but no image quality, which would be no novel-view result.
+
 Writes to `out_dir`: a 24 fps grid video of labelled panels (each source frame held for its true
 duration), a faster preview of the grid (each source frame shown once, at preview_fps), a metrics JSON
 keyed by source frame ID and held-out camera, per-frame metric plots, and copies of the gin configs.
@@ -32,8 +36,9 @@ from match.sequence_eval import panels as seq_panels
 from match.sequence_eval import plots as seq_plots
 from match.sequence_eval import predictors as seq_predictors
 from match.sequence_eval.context import SequencePlan, build_frame_context
-from match.sequence_eval.frames import (FrameLoadError, SequenceFrames, check_heldout_cameras, closest_to_frontal,
-                                        frame_ids, single_capture)
+from match.sequence_eval.frames import (FrameLoadError, SequenceFrames, check_fixed_view_input_camera,
+                                        check_heldout_cameras, closest_to_frontal, frame_ids, segment_ids,
+                                        single_capture)
 from match.utils import data_util
 
 
@@ -41,27 +46,32 @@ def build_panels(plan, opt) -> list[seq_panels.Panel]:
     """The grid's panels, in layout order (row-major)."""
     return [
         seq_panels.PredictionPanel(plan.fixed_view_camera),
-        seq_panels.RealPanel(plan.fixed_view_camera),
+        seq_panels.RealPanel(plan.fixed_view_camera, input_camera=plan.fixed_view_is_input),
         seq_panels.TempehMeshPanel(plan.fixed_view_camera, opt.template_mesh_path),
         seq_panels.OrbitPanel(plan.n_output_frames),  # loops from the config
     ]
 
 
-def build_metric_collectors() -> list[seq_metrics.MetricCollector]:
+def build_metric_collectors(plan) -> list[seq_metrics.MetricCollector]:
+    """Image quality is scored only at held-out cameras: at an input camera it would be no novel-view result."""
+    image_quality = [seq_metrics.ImageMetrics()] if plan.heldout_camera_ids else []
     # RAFT for the temporal metrics runs on the CPU (~2.5 s per pair): the model still holds the GPU.
-    return [seq_metrics.ImageMetrics(), seq_metrics.TemporalMetrics(device='cpu'), seq_metrics.GeometricJitter()]
+    return image_quality + [seq_metrics.TemporalMetrics(device='cpu'), seq_metrics.GeometricJitter()]
 
 
-def load_sequence(opt, heldout_camera_ids):
-    """Builds the dataset from the first val_loader_params entry and checks the held-out cameras on disk.
+def load_sequence(opt, heldout_camera_ids, fixed_view_input_camera=None):
+    """Builds the dataset from the first val_loader_params entry and checks the held-out cameras on disk, or, in a
+    flicker-only run, that the fixed-view input camera is an input on every frame.
 
-    Raises HeldOutCameraError before the model is loaded if a held-out camera is incomplete.
+    Raises HeldOutCameraError or FixedViewCameraError before the model is loaded.
     """
     params = opt.val_loader_params[0]
     dataset = data.get_dataset_cls(params['cls'])(**params['kwargs']['dataset_kwargs'])
     capture = single_capture(dataset)
     check_heldout_cameras(capture, heldout_camera_ids, frame_ids(capture))
-    return SequenceFrames(capture, heldout_camera_ids)
+    if fixed_view_input_camera is not None:
+        check_fixed_view_input_camera(capture, fixed_view_input_camera, frame_ids(capture))
+    return SequenceFrames(capture, heldout_camera_ids, fixed_view_input_camera)
 
 
 @gin.configurable()
@@ -144,15 +154,27 @@ def write_outputs(out_dir, video, preview, metrics):
 
 @gin.configurable()
 def eval_sequence(opt: Options, out_dir: str = None, heldout_camera_ids: list = None, fps: int = 24,
-                  capture_fps: int = 90, preview_fps: int = 10, store_config_files: list = ()):
-    """Evaluates the pretrained model on every frame of the configured segment. See the module docstring."""
-    if not out_dir or not heldout_camera_ids:
-        raise ValueError('eval_sequence.out_dir and eval_sequence.heldout_camera_ids must be set in the config')
-    heldout_camera_ids = [str(c) for c in heldout_camera_ids]
-    sequence = load_sequence(opt, heldout_camera_ids)  # fails before anything is loaded or written
+                  capture_fps: int = 90, preview_fps: int = 10, store_config_files: list = (),
+                  fixed_view_input_camera: str = None):
+    """Evaluates the pretrained model on every frame of the configured segment. See the module docstring.
+
+    Set either heldout_camera_ids (the fixed view is the one closest to frontal) or, for a flicker-only run,
+    fixed_view_input_camera (an input camera).
+    """
+    if not out_dir:
+        raise ValueError('eval_sequence.out_dir must be set in the config')
+    heldout_camera_ids = [str(c) for c in heldout_camera_ids or []]
+    if bool(heldout_camera_ids) == (fixed_view_input_camera is not None):
+        raise ValueError('Set exactly one of eval_sequence.heldout_camera_ids and '
+                         'eval_sequence.fixed_view_input_camera (the input camera of a flicker-only run), got '
+                         f'{heldout_camera_ids} and {fixed_view_input_camera!r}')
+    # fails before anything is loaded or written
+    sequence = load_sequence(opt, heldout_camera_ids, fixed_view_input_camera)
     capture = sequence.capture
+    fixed_view_camera = (closest_to_frontal(capture, heldout_camera_ids) if heldout_camera_ids
+                         else str(fixed_view_input_camera))
     plan = SequencePlan(sequence, schedule=seq_outputs.output_frame_schedule(sequence.frame_ids, fps, capture_fps),
-                        fixed_view_camera=closest_to_frontal(capture, heldout_camera_ids))
+                        fixed_view_camera=fixed_view_camera)
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -165,7 +187,7 @@ def eval_sequence(opt: Options, out_dir: str = None, heldout_camera_ids: list = 
     runner.eval()
 
     panels = build_panels(plan, opt)
-    collectors = build_metric_collectors()
+    collectors = build_metric_collectors(plan)
     video = seq_outputs.GridVideoWriter(out_dir, n_frames=plan.n_output_frames, fps=fps)
     preview = seq_outputs.GridVideoWriter(out_dir, n_frames=len(sequence), fps=preview_fps,
                                           name=seq_outputs.PREVIEW_VIDEO)
@@ -175,10 +197,11 @@ def eval_sequence(opt: Options, out_dir: str = None, heldout_camera_ids: list = 
     metrics = {
         'model': {'path': opt.load_pretrained_model, 'checkpoint': runner.pretrained_model_iter},
         'subject': capture.sid,
-        'segments': sorted(set(capture.framelist.seg_id.tolist())),
+        'segments': segment_ids(capture),
         'frames': sequence.frame_ids,
         'heldout_cameras': heldout_camera_ids,
         'fixed_view_camera': plan.fixed_view_camera,
+        'fixed_view_kind': 'input' if plan.fixed_view_is_input else 'heldout',
         'input_cameras': input_cameras,
         'video': {'file': seq_outputs.GRID_VIDEO, 'fps': fps, 'capture_fps': capture_fps,
                   'n_frames': plan.n_output_frames, 'panels': [p.label for p in panels]},

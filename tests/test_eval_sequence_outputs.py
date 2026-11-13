@@ -1,18 +1,20 @@
-"""Output contract of the sequence evaluation, checked on both the smoke run and the full run.
+"""Output contract of the sequence evaluation, checked on the smoke run, the full run and the flicker-only run.
 
 Smoke run: the first 3 frames of SEN_a_good_morrow_to_you_my_boy, held-out camera 402040.
 Full run: all 40 frames, held-out cameras 402040, 401905, 402031.
-Each run's tests skip until it has been done (see eval_sequence_runs.py). The smoke run's video content is
-checked further in test_eval_sequence_smoketest.py.
+Flicker-only run: the smoke run's frames with no held-out cameras; input camera 401875 is the fixed view, and
+there are temporal and jitter scores but no image-quality scores.
+Each run's tests skip until it has been done (see eval_sequence_runs.py). The video content of the smoke and
+flicker-only runs is checked further in test_eval_sequence_smoketest.py.
 """
 import math
 
 import pytest
 from PIL import Image
 
-from eval_sequence_runs import (FPS, FULL, PANELS, PIX_FMT, PLOTS, PREVIEW_FPS, SMOKE, VIDEO_H, VIDEO_W,
+from eval_sequence_runs import (FLICKER, FPS, FULL, IMAGE_METRICS_PLOT, PIX_FMT, PREVIEW_FPS, SMOKE, VIDEO_H, VIDEO_W,
                                 config_bindings, load_metrics, probe_video)
-from tce049 import FIXED_VIEW_CAMERA, FRAME_IDS_PER_SECOND, INPUT_CAMERA_IDS, REPO_ROOT
+from tce049 import FRAME_IDS_PER_SECOND, INPUT_CAMERA_IDS, REPO_ROOT
 
 # The spec's metrics and whether a higher value is better. Runs may record more.
 IMAGE_METRICS = {'psnr': True, 'ssim': True, 'lpips': False}
@@ -24,7 +26,7 @@ TEMPEH_JITTER_RANGE_MM = (0.5, 20.0)
 N_WORST_FRAMES = 3
 
 
-@pytest.fixture(scope='module', params=[SMOKE, FULL], ids=lambda run: run.name)
+@pytest.fixture(scope='module', params=[SMOKE, FULL, FLICKER], ids=lambda run: run.name)
 def run(request):
     return request.param
 
@@ -32,6 +34,17 @@ def run(request):
 @pytest.fixture(scope='module')
 def metrics(run):
     return load_metrics(run)
+
+
+@pytest.fixture(scope='module', params=[SMOKE, FULL], ids=lambda run: run.name)
+def heldout_run(request):
+    """The runs with held-out cameras, which score image quality there."""
+    return request.param
+
+
+@pytest.fixture(scope='module')
+def heldout_metrics(heldout_run):
+    return load_metrics(heldout_run)
 
 
 def is_finite_float(value):
@@ -76,14 +89,30 @@ def test_every_grid_video_frame_records_its_source_frame(run, metrics):
     assert all(h in (3, 4) for h in holds), holds
 
 
-def test_grid_has_the_four_panels(metrics):
-    assert metrics['video']['panels'] == PANELS
+def test_grid_has_the_four_panels(run, metrics):
+    assert metrics['video']['panels'] == list(run.panels)
 
 
-def test_image_metrics_are_finite_for_every_frame_and_heldout_camera(run, metrics):
+def test_the_fixed_view_camera_and_whether_it_is_held_out_or_an_input_are_recorded(run, metrics):
     assert metrics['frames'] == run.frames
+    assert metrics['segments'] == ['SEN_a_good_morrow_to_you_my_boy']
     assert metrics['heldout_cameras'] == run.heldout_cameras
-    assert metrics['fixed_view_camera'] == FIXED_VIEW_CAMERA
+    assert metrics['fixed_view_camera'] == run.fixed_view_camera
+    assert metrics['fixed_view_kind'] == run.fixed_view_kind
+
+
+def test_a_flicker_only_run_has_no_image_quality_scores_and_its_fixed_view_is_an_input_camera():
+    metrics = load_metrics(FLICKER)
+    assert metrics['heldout_cameras'] == []
+    assert 'per_frame' not in metrics and 'summary' not in metrics
+    assert IMAGE_METRICS_PLOT not in metrics['plots']
+    assert not (FLICKER.out_dir / IMAGE_METRICS_PLOT).exists()
+    assert metrics['fixed_view_kind'] == 'input'
+    assert all(FLICKER.fixed_view_camera in cameras for cameras in metrics['input_cameras'].values())
+
+
+def test_image_metrics_are_finite_for_every_frame_and_heldout_camera(heldout_run, heldout_metrics):
+    run, metrics = heldout_run, heldout_metrics
     assert sorted(metrics['per_frame'], key=int) == run.frames
     for frame in run.frames:
         assert sorted(metrics['per_frame'][frame]) == sorted(run.heldout_cameras)
@@ -93,7 +122,8 @@ def test_image_metrics_are_finite_for_every_frame_and_heldout_camera(run, metric
             assert all(is_finite_float(v) for v in scores.values()), (frame, camera, scores)
 
 
-def test_image_summary_has_the_mean_and_worst_frames_per_camera(run, metrics):
+def test_image_summary_has_the_mean_and_worst_frames_per_camera(heldout_run, heldout_metrics):
+    run, metrics = heldout_run, heldout_metrics
     for camera in run.heldout_cameras:
         for name, higher_is_better in IMAGE_METRICS.items():
             values = {f: metrics['per_frame'][f][camera][name] for f in run.frames}
@@ -102,7 +132,7 @@ def test_image_summary_has_the_mean_and_worst_frames_per_camera(run, metrics):
 
 def test_temporal_scores_are_finite_for_prediction_and_real_on_every_pair(run, metrics):
     temporal = metrics['temporal']
-    assert temporal['camera'] == FIXED_VIEW_CAMERA
+    assert temporal['camera'] == run.fixed_view_camera
     # each pair is keyed by its later source frame
     assert list(temporal['per_pair']) == run.frames[1:]
     for previous, frame in zip(run.frames, run.frames[1:]):
@@ -157,8 +187,8 @@ def test_pretrained_model_with_the_12_standard_inputs_on_every_frame(run, metric
 
 
 def test_plots_of_every_per_frame_metric_are_written(run, metrics):
-    assert metrics['plots'] == PLOTS
-    for name in PLOTS:
+    assert metrics['plots'] == list(run.plots)
+    for name in run.plots:
         with Image.open(run.out_dir / name) as image:
             assert image.format == 'PNG'
             assert min(image.size) > 200
