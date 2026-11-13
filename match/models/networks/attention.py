@@ -602,6 +602,33 @@ class Transformer(nn.Module):
     return x
 
 
+def _checkpoint_clip_block(block: nn.Module, block_inputs: dict, context: Optional[Tensor]):
+  """Runs one block on clip tokens (T folded into the batch) with gradient checkpointing, frame by frame.
+
+  The temporal sublayer needs every frame of a clip, so it is checkpointed on the whole batch. Everything
+  after it (the spatial attention and MLP) treats each sample on its own, so it is checkpointed one sample
+  at a time: the backward pass then recomputes one frame's spatial activations at a time instead of the
+  whole clip's. The result is what the block computes on the whole batch.
+  """
+  inputs = dict(block_inputs)
+  clip_len, frame_embedding = inputs.pop("clip_len"), inputs.pop("frame_embedding")
+  if block.temporal_uv is not None:
+    inputs["uv_tokens"] = torch.utils.checkpoint.checkpoint(
+        _add_temporal_residual, block.temporal_uv, inputs["uv_tokens"], clip_len, frame_embedding,
+        use_reentrant=False,
+    )
+  n_samples = inputs["uv_tokens"].shape[0]
+  outputs = [
+      torch.utils.checkpoint.checkpoint(
+          block,
+          **{k: v[i:i + 1] if isinstance(v, Tensor) else v for k, v in inputs.items()},
+          context=context, clip_len=1, frame_embedding=None, use_reentrant=False,
+      )
+      for i in range(n_samples)
+  ]
+  return [torch.cat(tokens) for tokens in zip(*outputs)]
+
+
 class CorrespondenceAwareTransformer(nn.Module):
 
   def __init__(
@@ -688,7 +715,9 @@ class CorrespondenceAwareTransformer(nn.Module):
         raise ValueError("Unsupported block type.")
       block_inputs.update(clip_len=clip_len, frame_embedding=frame_embedding)
 
-      if self.grad_checkpointing:
+      if self.grad_checkpointing and clip_len > 1:
+        uv_tokens, img_tokens = _checkpoint_clip_block(block, block_inputs, context)
+      elif self.grad_checkpointing:
         uv_tokens, img_tokens = torch.utils.checkpoint.checkpoint(
             block, **block_inputs, context=context, use_reentrant=False
         )

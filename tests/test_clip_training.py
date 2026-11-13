@@ -63,6 +63,28 @@ def test_the_loss_on_a_clip_is_the_sum_of_per_frame_matchs_losses_on_its_frames(
   torch.testing.assert_close(loss(temporal, to(as_clip(frames), device)), expected, atol=1e-5, rtol=1e-5)
 
 
+def clip_loss_and_grads(frames, grad_checkpoint):
+  from test_temporal_match_model import randomize_temporal_parameters
+  model = build(temporal=True, clip_length=3, grad_checkpoint=grad_checkpoint, **GEOMETRY_LOSSES)
+  randomize_temporal_parameters(model)
+  model.train()
+  torch.manual_seed(0)  # the same random input and render views in both runs
+  value = loss(model, as_clip(frames))
+  value.backward()
+  return value.detach(), {n: p.grad for n, p in model.named_parameters() if p.requires_grad}
+
+
+def test_gradient_checkpointing_does_not_change_a_clip_loss_or_its_gradients(frames):
+  expected_loss, expected_grads = clip_loss_and_grads(frames, grad_checkpoint=False)
+  value, grads = clip_loss_and_grads(frames, grad_checkpoint=True)
+
+  torch.testing.assert_close(value, expected_loss, atol=1e-6, rtol=1e-5)
+  assert grads.keys() == expected_grads.keys()
+  assert all(g.abs().max() > 0 for g in expected_grads.values() if g is not None)
+  for n, g in expected_grads.items():
+    torch.testing.assert_close(grads[n], g, atol=1e-6, rtol=1e-4, msg=n)
+
+
 def optimizer_of(model):
   """MatchRunner.init_optimizer on `model`, without the rest of the runner (display, accelerator, data)."""
   from match.runner import MatchRunner

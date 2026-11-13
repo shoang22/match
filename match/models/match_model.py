@@ -27,6 +27,15 @@ def checkpoint_allow_missing(opt: Options):
   return is_temporal_parameter if opt.temporal else None
 
 
+def _sample_slice(value, i: int, n_samples: int):
+  """Sample i of a batch value: a tensor or list with one entry per sample, kept as a batch of one."""
+  if isinstance(value, Tensor) and value.ndim > 0 and len(value) == n_samples:
+    return value[i:i + 1]
+  if isinstance(value, (list, tuple)) and len(value) == n_samples:
+    return value[i:i + 1]
+  return value
+
+
 def optimizer_param_groups(model: nn.Module, opt: Options) -> list[dict]:
   """The trainable parameters of `model` as optimizer parameter groups.
 
@@ -701,24 +710,21 @@ class MatchModel(nn.Module):
     its frames' losses: per-frame MATCH's loss on each frame, summed over the clip and averaged over the
     clips of the batch. The logged terms and metrics stay means over frames, comparable with per-frame
     training. Outputs with a batch axis (images, masked Gaussians) have one sample per frame (B * T).
+
+    With gradient checkpointing, a clip's losses are computed frame by frame and checkpointed, so that the
+    backward pass holds one frame's rendering and LPIPS activations at a time. Every frame of the batch
+    shares the input views, render views and background colour either way.
     """
-    outputs = {}
-
-    color_name = "image"
-
     data = data_util.MatchBatch(data)
     clip_len = 1
     if data.is_clip:
       data, clip_len = data.fold_clip()
     gaussian_parameters = self._forward_frame_gaussians(data, dtype, clip_len)
-    masked_gaussian_parameters = self.mask_gaussians(gaussian_parameters)
-    pred_verts = self.gaussians2mesh(gaussian_parameters) * 1000.0  # in mm
 
     # data preprocessing for loss calculation
     output_res = self.opt.output_res
     if output_res is None:
       output_res = self.opt.input_res
-    data = data_util.MatchBatch(data)
     data = data.resize(output_res)
     V = data.V
     device = data.device
@@ -734,6 +740,64 @@ class MatchModel(nn.Module):
     if self.opt.output_bg and not force_white_bg:
       bg_color = general_util.str_to_color(self.opt.output_bg)
       data = data.colorize_bg(bg_color)
+
+    loss_kwargs = dict(
+        lpips_loss=lpips_loss, step=step, dtype=dtype, bg_color=bg_color, render_img=render_img,
+        render_uv=render_uv, render_gauss=render_gauss, log_all=log_all, force_white_bg=force_white_bg,
+        return_masked_gaussians=return_masked_gaussians)
+    if clip_len == 1 or not (self.opt.grad_checkpoint and torch.is_grad_enabled()):
+      outputs = self._losses_on_frames(data, gaussian_parameters, **loss_kwargs)
+      # every term is a mean over the B * T frames, so T times it is the clips' mean of the per-frame sums
+      outputs["loss"] = outputs["loss"] * clip_len
+      return outputs
+
+    n_frames = len(gaussian_parameters["xyz"])
+    per_frame = [
+        torch.utils.checkpoint.checkpoint(
+            self._losses_on_frames,
+            data_util.MatchBatch({k: _sample_slice(v, i, n_frames) for k, v in data.items()}),
+            {k: v[i:i + 1] for k, v in gaussian_parameters.items()},
+            use_reentrant=False,
+            **loss_kwargs,
+        )
+        for i in range(n_frames)
+    ]
+    outputs = {}
+    for k, v in per_frame[0].items():
+      values = [frame_outputs[k] for frame_outputs in per_frame]
+      if k == "loss":  # sum over all frames, mean over the clips
+        outputs[k] = torch.stack(values).sum() / (n_frames // clip_len)
+      elif isinstance(v, dict):  # masked Gaussians
+        outputs[k] = {kk: torch.cat([vv[kk] for vv in values]) for kk in v}
+      elif k.startswith("images/"):
+        outputs[k] = torch.cat(values)
+      else:  # logged terms and metrics: mean over frames
+        outputs[k] = torch.stack(values).mean()
+    return outputs
+
+  def _losses_on_frames(
+      self,
+      data: data_util.MatchBatch,
+      gaussian_parameters: dict[str, Tensor],
+      lpips_loss: lpips.LPIPS | None,
+      step: int,
+      dtype: torch.dtype,
+      bg_color: list[float],
+      render_img: bool = False,
+      render_uv: bool = False,
+      render_gauss: bool = False,
+      log_all: bool = False,
+      force_white_bg: bool = False,
+      return_masked_gaussians: bool = False,
+  ):
+    """MATCH's losses (mean over the frames) for Gaussian textures and the frames' data at output resolution,
+    restricted to the render views and with the background colour applied."""
+    outputs = {}
+
+    color_name = "image"
+
+    masked_gaussian_parameters = self.mask_gaussians(gaussian_parameters)
+    pred_verts = self.gaussians2mesh(gaussian_parameters) * 1000.0  # in mm
 
     images = data[color_name].to(dtype)  # (B, V, 3, H, W)
     masks = data["mask"].to(dtype)  # (B, V, 1, H, W)
@@ -1035,8 +1099,7 @@ class MatchModel(nn.Module):
           loss_lpips, loss_weights["lpips"], drop_zero_weights=True
       )
 
-    # every term is a mean over the B * T frames, so T times it is the clips' mean of the per-frame sums
-    outputs["loss"] = loss * clip_len
+    outputs["loss"] = loss
 
     # Metric: PSNR, SSIM and LPIPS
     if do_render:
