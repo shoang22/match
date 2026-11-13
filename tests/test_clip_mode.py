@@ -137,3 +137,28 @@ def test_ava_clips_never_cross_into_the_next_segment():
     assert SEGMENT_FRAMES[-7::2] in clips  # the sentence's last clip ...
     assert not any(SEGMENT_FRAMES[-1] in clip and NEXT_SEGMENT_FIRST_FRAME in clip for clip in clips)
     assert [NEXT_SEGMENT_FIRST_FRAME, '33389', '33413', '33437'] in clips  # ... and the next segment's first
+
+
+# In TCE049's frame list, input camera 402020 has frame 33437 but not the next one, 33449 (both in this sentence)
+CAMERA_GAP_SEGMENT = 'SEN_all_your_wishful_thinking_wont_change_that'
+CAMERA_GAP_FRAMES = ['33437', '33449']
+CAMERA_GAP_CLIP = 6  # 33437 is the sentence's 7th frame: (33437 - 33365) / 12 = 6
+CAMERA_GAP_CAMERA = '402020'
+
+
+@needs_ava_data
+def test_an_ava_clip_stacks_the_frames_of_a_segment_with_the_same_cameras_in_each():
+    dataset, capture_dataset = tce049_capture(segment=CAMERA_GAP_SEGMENT, camera_angles=synth.AVA_CAMERA_ANGLES,
+                                              clip_length=2)
+    assert capture_dataset.get_clip(CAMERA_GAP_CLIP) == CAMERA_GAP_FRAMES
+    clip = dataset[CAMERA_GAP_CLIP]
+
+    assert clip['frame'] == CAMERA_GAP_FRAMES
+    assert (clip['subject'], clip['sequence']) == ('TCE049', CAMERA_GAP_SEGMENT)
+    assert tuple(clip['image'].shape) == (2, 12, 3, 786, 512)
+    assert tuple(clip['C2W'].shape) == (2, 12, 4, 4)
+    assert tuple(clip['headpose'].shape) == (2, 4, 4)
+    assert tuple(clip['verts'].shape) == (2, 5741, 3)
+    cameras = [[str(c) for c in frame_cameras] for frame_cameras in clip['camera'].tolist()]
+    assert cameras[0] == cameras[1]
+    assert CAMERA_GAP_CAMERA not in cameras[0]
