@@ -81,6 +81,8 @@ class MatchModel(nn.Module):
         opt.dim,
         opt.num_heads,
         llama_style=opt.llama_style,
+        temporal=opt.temporal,
+        clip_len=opt.clip_len,
     )
     if opt.grad_checkpoint:
       self.transformer.set_grad_checkpointing()
@@ -546,6 +548,7 @@ class MatchModel(nn.Module):
         correspondence_idcs=correspondence_idcs,
         correspondence_scores=correspondence_scores,
         nviews=v,
+        clip_len=clip_len,
     )
     x_uv = self.ln_out(x_uv)
     return self._uv_tokens_to_gaussian_feature_textures(x_uv, uv_xyz=uv_xyz, uv_rgb=uv_rgb)

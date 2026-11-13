@@ -105,3 +105,36 @@ def test_at_init_each_frame_of_a_clip_equals_per_frame_match(frames):
     for k, v in expected.items():
       assert clip_out[k].shape == (1, len(frames)) + v.shape[1:], k
       torch.testing.assert_close(clip_out[k][:, t], v, atol=ATOL, rtol=0, msg=f'{k} frame {t}')
+
+
+def temporal_parameter_names(temporal_model: MatchModel) -> set[str]:
+  """Parameters the temporal model has and per-frame MATCH doesn't."""
+  per_frame_names = set(build(temporal=False).state_dict())
+  return {n for n, _ in temporal_model.named_parameters()} - per_frame_names
+
+
+def randomize_temporal_parameters(model: MatchModel, seed=1):
+  g = torch.Generator().manual_seed(seed)
+  names = temporal_parameter_names(model)
+  assert names, 'the temporal model has no temporal parameters'
+  with torch.no_grad():
+    for n, p in model.named_parameters():
+      if n in names:
+        p.copy_(0.5 * torch.randn(p.shape, generator=g))
+
+
+@torch.no_grad()
+def test_with_nonzero_temporal_weights_changing_one_frame_changes_the_others(frames):
+  model = build(temporal=True, clip_len=3)
+  randomize_temporal_parameters(model)
+
+  before = model.forward_gaussians(as_clip(frames))
+  changed = copy.deepcopy(frames)
+  changed[0]['image'] = 1. - changed[0]['image']
+  changed[0]['coarse_verts'] = changed[0]['coarse_verts'] * 1.1
+  after = model.forward_gaussians(as_clip(changed))
+
+  # The pretrained-style init zeroes the scale and opacity heads, so only these depend on the tokens here.
+  for t in (1, 2):
+    for k in ('xyz', 'rgb', 'rotation'):
+      assert (after[k][:, t] - before[k][:, t]).abs().max() > 1e-4, f'{k} frame {t} did not change'
