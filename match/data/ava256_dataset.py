@@ -117,7 +117,7 @@ class AvaSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
     def get_frameid(self, idx:int)->str:
         return self.framelist.iloc[idx].frame_id
 
-    def __len__(self):
+    def num_frames(self) -> int:
         return len(self.framelist)
 
     @property

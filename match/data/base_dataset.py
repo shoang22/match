@@ -99,8 +99,26 @@ class BaseSingleCaptureDataset(torch.utils.data.Dataset):
         skip_sequences = [],
         require_verts = True,
         require_segmentation = True,
+        clip_length: int | None = None,
+        clip_stride: int = 1,
     ):
+        '''
+        Args:
+            clip_length: if given, each sample is a clip of this many frames from one sequence (an Ava-256
+                segment, a calibrated capture), see `get_clip`. None returns single frames.
+            clip_stride: in clip mode, the number of frame-list entries between consecutive frames of a clip.
+        '''
         super().__init__()
+        if clip_length is not None:
+            if clip_length < 1:
+                raise ValueError(f'clip_length must be at least 1 (or None for single frames), got {clip_length}')
+            if clip_stride < 1:
+                raise ValueError(f'clip_stride must be at least 1, got {clip_stride}')
+            if frame_stride != 1:
+                raise ValueError(f'frame_stride={frame_stride} strides the whole frame list, across sequence '
+                                 f'boundaries; in clip mode keep frame_stride=1 and set clip_stride instead')
+        self.clip_length = clip_length
+        self.clip_stride = clip_stride
         self.nframes = nframes
         self.capture = capture
         self.dir = Path(directory)
@@ -154,6 +172,9 @@ class BaseSingleCaptureDataset(torch.utils.data.Dataset):
         self.camera_map = dict()
         for i, cam in enumerate(self.cameras):
             self.camera_map[cam] = i
+
+        if self.clip_length is not None:
+            self.clips = self.build_clips()
 
     def load_metadata(self):
         """loads any metadata that may be used for later computations."""
@@ -470,19 +491,64 @@ class BaseSingleCaptureDataset(torch.utils.data.Dataset):
         raise NotImplementedError
 
     def __getitem__(self, idx: int) -> Optional[Dict[str, Union[np.ndarray, int, str]]]:
+        """A single frame, or in clip mode a clip (see `get_clip_sample`).
+
+        On a skippable error, moves on to the next index and keeps trying until a sample loads.
+        """
         exception_counter = 0
         while True:
+            sample_idx = (idx + exception_counter) % len(self)
             try:
-                frame_id = self.get_frameid((idx+exception_counter) % len(self))
+                if self.clip_length is not None:
+                    return self.get_clip_sample(sample_idx)
+                frame_id = self.get_frameid(sample_idx)
                 if 'ALL' in self.invalid_frame_cameras[frame_id]:
                     raise data_util.SkippableError(f'Skipping known invalid {self.dir} frame: {frame_id}')
                 camera_ids = self.sample_cameras_from_camera_angles(frame_id)
                 extra_camera_ids = self.get_extra_camera_ids(frame_id, avoid_camera_ids = camera_ids)
                 return self.fetch_data_from_disk(frame_id=frame_id, camera_ids=camera_ids, extra_camera_ids=extra_camera_ids)
             except data_util.SkippableError as e:
-                logging.warning(f'Skippable error in loading sample {self.dir} {frame_id} {idx+exception_counter} ({exception_counter} Retries):\n{e}\nRetrying next sample ...')
-                exception_counter += 1                
-    
+                logging.warning(f'Skippable error in loading sample {self.dir} {sample_idx} ({exception_counter} Retries):\n{e}\nRetrying next sample ...')
+                exception_counter += 1
+
+    def build_clips(self) -> List[List[int]]:
+        """Frame indices of every clip: `clip_length` frames, `clip_stride` apart, within one sequence.
+
+        Every frame that has enough frames after it in its sequence starts a clip.
+        """
+        span = (self.clip_length - 1) * self.clip_stride
+        sequence_frame_idcs = OrderedDict()  # sequence id -> its frame indices, in frame-list order
+        for i in range(self.num_frames()):
+            sequence_frame_idcs.setdefault(self.get_sequenceid(self.get_frameid(i)), []).append(i)
+        clips = []
+        for frame_idcs in sequence_frame_idcs.values():
+            for start in range(len(frame_idcs) - span):
+                clips.append(frame_idcs[start:start + span + 1:self.clip_stride])
+        return clips
+
+    def get_clip(self, idx: int) -> List[str]:
+        """Frame ids of clip `idx`, in time order."""
+        return [self.get_frameid(i) for i in self.clips[idx]]
+
+    def get_clip_sample(self, idx: int) -> Dict[str, Any]:
+        """Loads clip `idx` with one camera selection for all its frames.
+
+        Cameras are chosen as for a single frame, avoiding every camera known to be invalid in any frame of the
+        clip. Per-frame tensors are stacked on a new leading time axis, `frame` becomes the list of frame ids,
+        and the other strings (subject, sequence) are shared by the clip.
+        """
+        frame_ids = self.get_clip(idx)
+        invalid = set()
+        for frame_id in frame_ids:
+            if 'ALL' in self.invalid_frame_cameras[frame_id]:
+                raise data_util.SkippableError(f'Skipping clip {idx} of {self.dir}: known invalid frame {frame_id}')
+            invalid.update(self.invalid_frame_cameras[frame_id])
+        camera_ids = self.sample_cameras_from_camera_angles(frame_ids[0], avoid_camera_ids=invalid)
+        extra_camera_ids = self.get_extra_camera_ids(frame_ids[0], avoid_camera_ids=invalid | set(camera_ids))
+        frames = [self.fetch_data_from_disk(frame_id=frame_id, camera_ids=camera_ids, extra_camera_ids=extra_camera_ids)
+                  for frame_id in frame_ids]
+        return stack_clip(frames)
+
     def get_image_path(self, frame_id:str, camera_id:str):
         raise NotImplementedError
 
@@ -490,13 +556,33 @@ class BaseSingleCaptureDataset(torch.utils.data.Dataset):
     def get_frameid(self, idx:int) -> str:
         raise NotImplemented
 
-    def __len__(self):
+    def num_frames(self) -> int:
         raise NotImplementedError
+
+    def __len__(self):
+        """Number of samples: clips in clip mode, frames otherwise."""
+        if self.clip_length is not None:
+            return len(self.clips)
+        return self.num_frames()
 
     ### Methods added for compat with previous version of dataset. Might want to revisit these
     def get_allcameras(self) -> Set[str]:
         return set(self.cameras)
 
+
+
+def stack_clip(frames: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Combines the single-frame samples of a clip: tensors stacked on a new leading time axis, `frame` as the
+    list of frame ids, other values (subject, sequence) taken from the first frame."""
+    clip = dict()
+    for k, v in frames[0].items():
+        if isinstance(v, torch.Tensor):
+            clip[k] = torch.stack([f[k] for f in frames])
+        elif k == 'frame':
+            clip[k] = [f[k] for f in frames]
+        else:
+            clip[k] = v
+    return clip
 
 
 class BaseMultiCaptureDataset(torch.utils.data.Dataset):

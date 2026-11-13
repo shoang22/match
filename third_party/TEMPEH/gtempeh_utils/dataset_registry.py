@@ -60,13 +60,16 @@ def dataset_specs_from_args(args) -> list:
 
 
 def build_datasets(specs, process_idx=0, world_size=1) -> list:
-    """One MATCH multi-capture dataset per spec, set up for inference (no GT vertices or segmentations)."""
+    """One MATCH multi-capture dataset per spec, set up for inference (no GT vertices or segmentations).
+
+    Every subject is included unless the spec sets `training` (Ava-256: True drops the held-out subjects of
+    assets/ava256/validation_ids.json, False keeps only them)."""
     from match.data import get_dataset_cls
     datasets = list()
     for spec in specs:
-        kwargs = dict(deterministic_shuffle=False, require_verts=False, require_segmentation=False)
+        kwargs = dict(deterministic_shuffle=False, require_verts=False, require_segmentation=False, training=None)
         kwargs.update({k: v for k, v in spec.items() if k != 'type'})
-        kwargs.update(training=None, process_idx=process_idx, world_size=world_size)
+        kwargs.update(process_idx=process_idx, world_size=world_size)
         datasets.append(get_dataset_cls(spec['type'])(**kwargs))
     return datasets
 
