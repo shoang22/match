@@ -11,10 +11,11 @@ import matplotlib
 matplotlib.use('Agg')  # offscreen; must precede pyplot
 import matplotlib.pyplot as plt  # noqa: E402
 
-from match.sequence_eval.metrics import IMAGE_METRICS, TEMPORAL_SCORES, TEMPORAL_SOURCES  # noqa: E402
+from match.sequence_eval.metrics import IMAGE_METRICS, JITTER_SOURCES, TEMPORAL_SCORES, TEMPORAL_SOURCES  # noqa: E402
 
 IMAGE_METRICS_PLOT = 'plot_image_metrics.png'
 TEMPORAL_METRICS_PLOT = 'plot_temporal_metrics.png'
+JITTER_PLOT = 'plot_geometric_jitter.png'
 MAX_LABELLED_FRAMES = 40  # up to this many source frames, each one is a labelled x tick
 
 
@@ -82,15 +83,40 @@ def plot_temporal_metrics(path, metrics):
     _save(fig, path)
 
 
+def plot_geometric_jitter(path, metrics):
+    """One line per jitter source (TEMPEH part, offset, final position), all in mm on one axis.
+
+    A triple's value sits at its middle frame, as in metrics.json.
+    """
+    jitter = metrics['jitter']
+    frames = list(jitter['per_frame'])
+    x = [int(f) for f in frames]
+    fig, ax = plt.subplots(1, 1, figsize=(10, 4))
+    for source, label in JITTER_SOURCES.items():
+        ax.plot(x, [_finite_or_nan(jitter['per_frame'][f][source]) for f in frames], marker='o', markersize=3,
+                label=label)
+    ax.set_ylabel(f'mean |x[t+1] - 2x[t] + x[t-1]| ({jitter["units"]})')
+    ax.set_ylim(bottom=0)
+    _finish_axes([ax], metrics['frames'], 'Source frame ID (middle of three consecutive source frames)')
+    fig.suptitle('Geometric jitter of the predicted texel positions (lower is better)')
+    _save(fig, path)
+
+
 def write_metric_plots(out_dir, metrics):
     """Writes the per-frame plots of `metrics` (the metrics.json dict) into out_dir. Returns their file names.
 
-    Raises KeyError if the image metrics or the temporal section are missing.
+    A flicker-only run (no held-out cameras) has no image-quality scores and gets no image-metrics plot.
+    Raises KeyError if the temporal or the jitter section is missing, or the image metrics of a run with
+    held-out cameras.
     """
-    for section in ('per_frame', 'temporal'):
+    image_quality = bool(metrics['heldout_cameras'])
+    for section in ('per_frame',) * image_quality + ('temporal', 'jitter'):
         if section not in metrics:
             raise KeyError(f"metrics has no '{section}' section to plot")
     out_dir = Path(out_dir)
-    plot_image_metrics(out_dir / IMAGE_METRICS_PLOT, metrics)
-    plot_temporal_metrics(out_dir / TEMPORAL_METRICS_PLOT, metrics)
-    return [IMAGE_METRICS_PLOT, TEMPORAL_METRICS_PLOT]
+    plots = [(TEMPORAL_METRICS_PLOT, plot_temporal_metrics), (JITTER_PLOT, plot_geometric_jitter)]
+    if image_quality:
+        plots.insert(0, (IMAGE_METRICS_PLOT, plot_image_metrics))
+    for name, plot in plots:
+        plot(out_dir / name, metrics)
+    return [name for name, _ in plots]

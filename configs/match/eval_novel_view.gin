@@ -1,0 +1,99 @@
+# PYTHONPATH=$(pwd) PYOPENGL_PLATFORM=egl conda run -n match --no-capture-output torchrun --standalone --nnodes=1 --nproc-per-node=1 scripts/match/eval_novel_view.py --gin_configs configs/match/eval_novel_view.gin
+# Single-frame novel-view benchmark (#40) of the pretrained MATCH model (uv_res_1024, 860k) under MATCH's protocol: held-out Ava-256
+# subjects (assets/ava256/validation_ids.json, `training: False`), the 12 standard input cameras, and per test frame one target camera
+# drawn with SEED from TARGET_CAMERA_IDS, never an input of any frame of its 4-frame sliding window. Scores at the target camera:
+# masked PSNR, SSIM and LPIPS (the sequence evaluation's image metrics), and masked L1 and L2 (mean absolute and squared error over
+# the foreground pixels and channels, images in [0, 1]). MATCH's paper also reports CSIM; it needs a face-recognition model and is
+# follow-up #45.
+#
+# Temporal MATCH: append --gin_bindings "TEMPORAL = True" (with MODEL_PATH/CKPT of a temporal checkpoint, or the per-frame one for
+# temporal MATCH at initialization) and a new OUT_DIR. Each test frame is then predicted from its sliding window and that frame's
+# output kept. The samples depend only on the data, SEED, N_SAMPLES and CONTEXT_LENGTH, so every row of the table scores the same ones.
+#
+# Test frames need TEMPEH predictions for themselves and for their window: they are drawn only from runs of at least CONTEXT_LENGTH
+# consecutive frames (one Ava segment) that all have a coarse mesh and input-camera UV maps under AVA_UV_DIR. A frame next to a frame
+# without a prediction gets the window shifted away from the gap, as at a sequence's end; frames of shorter runs are not test frames
+# (metrics.json protocol: n_frames_without_inputs, n_frames_in_short_runs).
+#
+# On this machine only TCE049 (a held-out subject) is on disk, with TEMPEH for the 40 frames of SEN_a_good_morrow_to_you_my_boy and
+# images of 3 non-input cameras, so the run has 40 test frames whatever N_SAMPLES is. More subjects, segments and target cameras
+# are picked up from the data on disk (TEMPEH: configs/tempeh/save_predictions_seq_SEN_a_good_morrow.yml, run per segment).
+# ~2 s per per-frame sample, ~11 s per sliding sample (a 4-frame x 12-view window, 18.6 GiB peak).
+# Output (OUT_DIR): metrics.json {model, protocol, inference, summary, samples} and config copies.
+# Few-sample check: configs/match/eval_novel_view_smoketest.gin.
+
+include 'assets/pretrained_models/match/uv_res_1024/config_0.gin'
+NAME = 'eval_novel_view'
+MODEL_PATH = 'assets/pretrained_models/match/uv_res_1024'
+CKPT = 860_000
+N_GPUS = 1
+OUT_DIR = 'experiments/match/eval_novel_view/per_frame'
+
+AVA_ROOT = 'data/ava-256'
+AVA_UV_DIR = 'data/tempeh_predictions/ava-256/seq_SEN_a_good_morrow/ava-256'
+# Cameras a target may be drawn from: all of them once downloaded; here the 3 non-input cameras with images of TCE049
+# (configs/data/download_ava256_heldout.gin). A camera without an image and mask for a test frame is skipped for that frame.
+TARGET_CAMERA_IDS = ['402040', '401905', '402031']
+N_SAMPLES = 1000
+SEED = 0
+CONTEXT_LENGTH = 4  # the sliding window of the temporal model (Options.clip_length must not exceed it)
+
+TEMPORAL = False
+INFERENCE_MODE = None  # 'per_frame' | 'sliding'; None = 'sliding' for a temporal checkpoint, else 'per_frame'
+
+eval_novel_view:
+  out_dir = %OUT_DIR
+  target_camera_ids = %TARGET_CAMERA_IDS
+  n_samples = %N_SAMPLES
+  seed = %SEED
+  context_length = %CONTEXT_LENGTH
+  inference_mode = %INFERENCE_MODE
+
+Options:
+  base_folder = %OUT_DIR
+  load_pretrained_model = %MODEL_PATH
+  load_pretrained_model_ckpt = %CKPT
+  temporal = %TEMPORAL
+
+  val_loader_params = [
+    {
+      'name': 'ava_heldout',
+      'cls': 'ava256',
+      'kwargs': {
+        'dataloader_kwargs': {
+          'batch_size': 1,
+          'num_workers': 0,
+        },
+        'dataset_kwargs': {
+          'root_path': %AVA_ROOT,
+          'frame_stride': 1,
+          'height': %AVA_HEIGHT,
+          'width': %AVA_WIDTH,
+          'camera_angles': %AVA_CAMERA_ANGLES,
+          'uv_directory': %AVA_UV_DIR,
+          'coarse_mesh_directory': %AVA_UV_DIR,
+          'max_captures': %AVA_MAX_CAPTURES,
+          'head_crop': %HEAD_CROP,
+          'head_crop_height': %HEAD_CROP_HEIGHT,
+          'head_crop_width': %HEAD_CROP_WIDTH,
+          'head_crop_offset_y': %HEAD_CROP_OFFSET_Y,
+          'sapiens_segmentation_directory': None,
+          'deterministic_shuffle': False,
+          'training': False,
+          'require_segmentation': False,
+          'require_verts': False,
+        }
+      }
+    },
+  ]
+
+condor_name/join_strings.strings = ['.', %NAME, '-', %CKPT]
+cmd/join_strings.strings = ['torchrun --standalone --nnodes=1 --nproc-per-node=', %N_GPUS, ' scripts/match/eval_novel_view.py --gin_configs __CONFIG__']
+
+CondorParameters:
+  njobs = 1
+  environment = {}
+  name = @condor_name/join_strings()
+  batch_name = @condor_name/join_strings()
+  cmd = @cmd/join_strings()
+  requirements = '(TARGET.CUDACapability >= 7.0)'

@@ -1,0 +1,68 @@
+# PYTHONPATH=$(pwd) PYOPENGL_PLATFORM=egl conda run -n match --no-capture-output torchrun --standalone --nnodes=1 --nproc-per-node=1 scripts/match/eval_sequence.py --gin_configs configs/match/eval_sequence_background1_flicker.gin
+# Flicker-only sequence evaluation (#28) of the pretrained per-frame MATCH model (uv_res_1024, 860k) on all 30 frames of
+# `background 1` (12 cameras, outdoor, calibrated-capture dataset). Every camera is an input, so there are no held-out
+# cameras: the fixed view is input camera 0 (slot [az 0, el 0], the frontal one), and the run writes temporal (flicker)
+# and geometric-jitter scores but no image-quality scores.
+#
+# Rerun from the repo root, in the `match` conda env:
+#   1. data/captures/background 1 (the capture folder, e.g. a symlink) and its interim Sapiens masks in
+#      data/captures/masks_sapiens/background 1 (README "Mask folder").
+#   2. TEMPEH for all 30 frames (~1 min): configs/tempeh/save_predictions_background1.yml (writes CAPTURE_TEMPEH_DIR).
+#   3. The command on the first line (whole 24 GB GPU, Xvfb :99; see eval_sequence_SEN_a_good_morrow.gin step 4).
+#   4. Check the outputs: EVAL_SEQUENCE_FLICKER_DIR=<OUT_DIR> conda run -n match python -m pytest tests/test_eval_sequence_outputs.py
+
+include 'configs/match/eval_sequence_SEN_a_good_morrow.gin'
+NAME = 'eval_sequence-background1_flicker'
+OUT_DIR = 'experiments/match/eval_sequence/background1_flicker'
+
+CAPTURE_ROOT = 'data/captures/background 1'
+CAPTURE_MASK_DIR = 'data/captures/masks_sapiens/background 1'
+CAPTURE_TEMPEH_DIR = 'data/tempeh_predictions/background_1/calibrated'
+NFRAMES = -1               # all 30 frames
+CAPTURE_FRAME_STRIDE = 1
+# Framing as in save_camera_sweeps_calibrated.gin: the Ava image size and 640x512 head crop, moved up so the hair stays
+# inside the crop in cameras 10 and 11.
+CAPTURE_HEIGHT = %AVA_HEIGHT
+CAPTURE_WIDTH = %AVA_WIDTH
+CAPTURE_HEAD_CROP_OFFSET_Y = -128
+
+# The frame rate of `background 1` is not recorded with the capture; its frame IDs are 0..29. CAPTURE_FPS only sets the
+# video timing (grid.mp4 plays the 30 frames over 3 s); no score depends on it.
+CAPTURE_FPS = 10
+PREVIEW_FPS = 10
+
+HELDOUT_CAMERA_IDS = []
+HELDOUT_CAMERA_ANGLES = None
+FIXED_VIEW_INPUT_CAMERA = '0'   # calibrated camera IDs are str(int)
+
+Options.val_loader_params = [
+    {
+      'name': 'background1_sequence',
+      'cls': 'calibrated',
+      'kwargs': {
+        'dataloader_kwargs': {
+          'batch_size': 1,
+          'num_workers': 2,
+        },
+        'dataset_kwargs': {
+          'nframes': %NFRAMES,
+          'root_path': %CAPTURE_ROOT,
+          'mask_directory': %CAPTURE_MASK_DIR,
+          'height': %CAPTURE_HEIGHT,
+          'width': %CAPTURE_WIDTH,
+          'camera_angles': %AVA_CAMERA_ANGLES,  # the pretrained model's 12 camera angles
+          'uv_directory': %CAPTURE_TEMPEH_DIR,
+          'coarse_mesh_directory': %CAPTURE_TEMPEH_DIR,
+          'frame_stride': %CAPTURE_FRAME_STRIDE,
+          'head_crop': %HEAD_CROP,
+          'head_crop_height': %HEAD_CROP_HEIGHT,
+          'head_crop_width': %HEAD_CROP_WIDTH,
+          'head_crop_offset_y': %CAPTURE_HEAD_CROP_OFFSET_Y,
+          'deterministic_shuffle': False,
+          'training': None,
+          'require_segmentation': False,
+          'require_verts': False,
+        }
+      }
+    },
+  ]

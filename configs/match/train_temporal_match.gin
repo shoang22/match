@@ -1,0 +1,165 @@
+# Temporal MATCH (#24), stage 1: fine-tune the temporal sublayers of the pretrained MATCH model on Ava-256 clips, single GPU.
+# PYOPENGL_PLATFORM=egl PYTHONPATH=$(pwd) PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True torchrun --standalone --nnodes=1 --nproc-per-node=1 scripts/match/train_match.py --gin_configs configs/match/train_temporal_match.gin
+#
+# The pretrained model is uv_res_1024 at 860k, on one RTX 4090 (24 GB). The spatial weights and the Sapiens encoder stay frozen;
+# only the temporal sublayers, their norms and the frame embeddings train. MATCH's losses apply to every frame of a clip and are
+# summed over the clip.
+#
+# Needs data that is not on disk yet: the Ava-256 training subjects (configs/data/download_ava256_full.gin, with kinematic
+# tracking for the geometry losses) and their stride-1 TEMPEH predictions (configs/tempeh/save_predictions_train_stride1.yml, #34).
+# Without them the training set is empty. configs/match/train_temporal_match_smoketest.gin runs the same setup on data that is on disk.
+#
+# Starts from the pretrained weights only: with no checkpoint of its own in base_folder/checkpoints the run starts at step 0
+# with a fresh optimizer and LR schedule (Options.fine_tune, on by default for temporal MATCH). A run with checkpoints resumes them,
+# so give every run a new NAME.
+#
+# More GPUs: set N_GPUS and launch with --nproc-per-node=%N_GPUS. BATCH_SIZE is clips per GPU.
+
+include 'assets/pretrained_models/match/uv_res_1024/config_0.gin'
+NAME = 'temporal_match'
+BASE_FOLDER = 'experiments/match'
+MODEL_PATH = 'assets/pretrained_models/match/uv_res_1024'
+CKPT = 860_000
+N_GPUS = 1
+BATCH_SIZE = 1  # clips per GPU
+NUM_WORKERS = 8
+
+# Clips: CLIP_LENGTH frames, CLIP_STRIDE frame-list rows apart, never crossing a segment. One Ava-256 frame-list row is 12 frame
+# IDs = 2/15 s, so a clip of 4 at stride 1 spans 0.4 s (stride 2: 0.8 s). The model accepts clips of up to CLIP_LENGTH frames.
+CLIP_LENGTH = 4
+CLIP_STRIDE = 1
+
+# Held-out subjects: never used for training. These are the 12 subjects of assets/ava256/validation_ids.json (the MATCH paper
+# says 11), which the Ava-256 dataset's training=True split also drops; listing them here keeps the split visible in the config
+# and holds even if that file changes.
+HELDOUT_SUBJECTS = ['INQ807', 'KWL586', 'BGR645', 'PDG961', 'LCJ763', 'UHV563', 'PGO261', 'IBQ026', 'APP152', 'YJF815', 'PSV686', 'TCE049']
+
+# TEMPEH coarse meshes and UV maps for every frame of the training subjects (#34)
+AVA_TRAIN_UV_DIR = 'data/tempeh_predictions/ava-256/train_stride1/ava-256'
+# Validation: per-frame MATCH losses on the held-out subject TCE049's SEN_a_good_morrow_to_you_my_boy segment, the only
+# held-out data with TEMPEH predictions at every frame (configs/tempeh/save_predictions_seq_SEN_a_good_morrow.yml).
+AVA_VAL_UV_DIR = 'data/tempeh_predictions/ava-256/seq_SEN_a_good_morrow/ava-256'
+VAL_SUBJECT = 'TCE049'
+VAL_SEGMENT = 'SEN_a_good_morrow_to_you_my_boy'
+
+base_folder/join_strings.strings = [%BASE_FOLDER, '/', %NAME]
+condor_name/join_strings.strings = ['.', %NAME]
+cmd/join_strings.strings = ['PYTHONPATH=$(pwd) PYOPENGL_PLATFORM=egl PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True torchrun --standalone --nnodes=1 --nproc-per-node=', %N_GPUS, ' scripts/match/train_match.py --gin_configs __CONFIG__']
+
+Options:
+  base_folder = @base_folder/join_strings()
+  load_pretrained_model = %MODEL_PATH
+  load_pretrained_model_ckpt = %CKPT
+
+  # Temporal MATCH
+  temporal = True
+  clip_length = %CLIP_LENGTH
+  temporal_freeze_spatial = True  # spatial weights frozen; Sapiens is never trained
+  # Ablation (off): train the spatial weights too, as a second optimizer group at their own (low) learning rate:
+  #   temporal_freeze_spatial = False
+  #   temporal_spatial_lr = 4e-6
+  temporal_spatial_lr = None
+  grad_checkpoint = True
+
+  # The pretrained run already finished its geometry-only phase and LPIPS warmup; a fine-tune starting at step 0 must not
+  # repeat them (config_0.gin: geom_only_steps 100k, LPIPS warmup 150k-200k).
+  geom_only_steps = 0
+  lpips_warmup_start = 0
+  lpips_warmup_end = 0
+
+  optimizer = {
+    'name': 'adamw',
+    'lr': 4e-5,  # MATCH's learning rate
+    'betas': [0.9, 0.95],
+    'weight_decay': 0.05,
+  }
+  # No step budget yet: the run tickets set max_train_steps from the step time recorded on #37.
+  lr_scheduler = {
+    'name': 'constant_warmup',
+    'num_warmup_steps': 500,
+    'total_steps': 100_000,  # unused by a constant schedule
+  }
+  max_train_steps = 100_000
+  save_freq = 2_000
+  eval_freq = 2_000
+  early_eval = 0
+  early_eval_freq = 2_000
+  max_val_steps = 10
+  n_vissamples = 2
+  log_freq = 10
+  restart_after_eval_frequency = None
+
+  # Ava-256 only: one dataset, so every per-dataset loss weight list has one entry (config_0.gin's [Ava, NeRSemble] lists)
+  mesh_vert_weight = 1e-3
+  xyz_weight = 1e-3
+  # No Sapiens segmentations exist at stride 1 (config_0.gin's are at stride 10), so no body-part loss masks.
+  noloss_masks = []
+
+  train_loader_params = {
+    'cls': 'ava256',
+    'kwargs': {
+      'dataloader_kwargs': {
+        'batch_size': %BATCH_SIZE,
+        'num_workers': %NUM_WORKERS,
+        'persistent_workers': True,
+      },
+      'dataset_kwargs': {
+        'root_path': %AVA_ROOT,
+        'height': %AVA_HEIGHT,
+        'width': %AVA_WIDTH,
+        'camera_angles': %AVA_CAMERA_ANGLES,
+        'uv_directory': %AVA_TRAIN_UV_DIR,
+        'coarse_mesh_directory': %AVA_TRAIN_UV_DIR,
+        'frame_stride': 1,  # clip mode strides within a segment (clip_stride)
+        'clip_length': %CLIP_LENGTH,
+        'clip_stride': %CLIP_STRIDE,
+        'head_crop': %HEAD_CROP,
+        'head_crop_height': %HEAD_CROP_HEIGHT,
+        'head_crop_width': %HEAD_CROP_WIDTH,
+        'head_crop_offset_y': %HEAD_CROP_OFFSET_Y,
+        'training': True,
+        'exclude_subjects': %HELDOUT_SUBJECTS,
+        'require_segmentation': False,
+      }
+    }
+  }
+  val_loader_params = [
+    {
+      'name': 'ava_val',
+      'cls': 'ava256',
+      'kwargs': {
+        'dataloader_kwargs': {
+          'batch_size': 1,
+          'num_workers': 2,
+        },
+        'dataset_kwargs': {
+          'root_path': %AVA_ROOT,
+          'height': %AVA_HEIGHT,
+          'width': %AVA_WIDTH,
+          'camera_angles': %AVA_CAMERA_ANGLES,
+          'uv_directory': %AVA_VAL_UV_DIR,
+          'coarse_mesh_directory': %AVA_VAL_UV_DIR,
+          'frame_stride': 1,
+          'only_subjects': [%VAL_SUBJECT],
+          'segment': %VAL_SEGMENT,
+          'head_crop': %HEAD_CROP,
+          'head_crop_height': %HEAD_CROP_HEIGHT,
+          'head_crop_width': %HEAD_CROP_WIDTH,
+          'head_crop_offset_y': %HEAD_CROP_OFFSET_Y,
+          'training': False,
+          'deterministic_shuffle': True,
+          'require_segmentation': False,
+          'require_verts': False,  # TCE049 has no kinematic tracking on disk; its mesh metrics are against zeros
+        }
+      }
+    },
+  ]
+
+CondorParameters:
+  njobs = 1
+  environment = {}
+  name = @condor_name/join_strings()
+  batch_name = @condor_name/join_strings()
+  cmd = @cmd/join_strings()
+  request_gpus = %N_GPUS
+  requirements = '(TARGET.CUDACapability >= 7.0)'

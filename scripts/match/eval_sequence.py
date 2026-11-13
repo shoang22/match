@@ -1,5 +1,10 @@
-"""Sequence evaluation of MATCH: an independent forward pass of the pretrained model on every frame of an
-Ava-256 segment, rendered from held-out cameras that are never inputs.
+"""Sequence evaluation of MATCH: a prediction for every frame of an Ava-256 segment, rendered from held-out
+cameras that are never inputs. Per-frame MATCH runs an independent forward pass per frame; a temporal
+checkpoint runs on windows of frames and keeps each frame from one window (sliding or block mode).
+
+Flicker-only run: with no held-out cameras (e.g. a calibrated capture whose cameras are all inputs), the
+configured input camera `fixed_view_input_camera` is the fixed view. The run scores flicker and geometric
+jitter there, but no image quality, which would be no novel-view result; metrics.json's `quality_scores` says so.
 
 Writes to `out_dir`: a 24 fps grid video of labelled panels (each source frame held for its true
 duration), a faster preview of the grid (each source frame shown once, at preview_fps), a metrics JSON
@@ -7,6 +12,7 @@ keyed by source frame ID and held-out camera, per-frame metric plots, and copies
 Configs and run command: configs/match/eval_sequence_*.gin.
 
 Extension points (one place each):
+- how each frame's Gaussian texture is predicted: `build_predictor` (predictors in match/sequence_eval/predictors.py)
 - grid panels: `build_panels` (panel classes in match/sequence_eval/panels.py)
 - metrics: `build_metric_collectors` (collectors in match/sequence_eval/metrics.py)
 - outputs: `write_outputs` (helpers in match/sequence_eval/outputs.py)
@@ -29,9 +35,11 @@ from match.sequence_eval import metrics as seq_metrics
 from match.sequence_eval import outputs as seq_outputs
 from match.sequence_eval import panels as seq_panels
 from match.sequence_eval import plots as seq_plots
+from match.sequence_eval import predictors as seq_predictors
 from match.sequence_eval.context import SequencePlan, build_frame_context
-from match.sequence_eval.frames import (FrameLoadError, SequenceFrames, check_heldout_cameras, closest_to_frontal,
-                                        frame_ids, single_capture)
+from match.sequence_eval.frames import (FrameLoadError, SequenceFrames, check_fixed_view_input_camera,
+                                        check_heldout_cameras, closest_to_frontal, frame_ids, segment_ids,
+                                        single_capture)
 from match.utils import data_util
 
 
@@ -39,57 +47,126 @@ def build_panels(plan, opt) -> list[seq_panels.Panel]:
     """The grid's panels, in layout order (row-major)."""
     return [
         seq_panels.PredictionPanel(plan.fixed_view_camera),
-        seq_panels.RealPanel(plan.fixed_view_camera),
+        seq_panels.RealPanel(plan.fixed_view_camera, input_camera=plan.fixed_view_is_input),
         seq_panels.TempehMeshPanel(plan.fixed_view_camera, opt.template_mesh_path),
         seq_panels.OrbitPanel(plan.n_output_frames),  # loops from the config
     ]
 
 
-def build_metric_collectors() -> list[seq_metrics.MetricCollector]:
+# Geometric jitter averages over the face skin: the texels whose triangle lies in the template's fitting_region_skin
+# vertex group (36% of the uv_res_1024 grid). The rest of the grid is ears, eyes, mouth interior, neck and scalp,
+# where TEMPEH's coarse mesh has no reliable surface to measure jitter against.
+JITTER_REGION = 'fitting_region_skin'
+
+
+def jitter_region(model) -> seq_metrics.TexelRegion:
+    return seq_metrics.TexelRegion(JITTER_REGION, model.texels_in_vertex_group(JITTER_REGION))
+
+
+def build_metric_collectors(plan, jitter_region: seq_metrics.TexelRegion = None) -> list[seq_metrics.MetricCollector]:
+    """Image quality is scored only at held-out cameras: at an input camera it would be no novel-view result, so a
+    flicker-only run writes a note that it was not computed instead. jitter_region: the texels the geometric
+    jitter averages over (all masked texels if None)."""
+    image_quality = (seq_metrics.ImageMetrics() if plan.heldout_camera_ids
+                     else seq_metrics.ImageQualityNotComputed(plan.fixed_view_camera))
     # RAFT for the temporal metrics runs on the CPU (~2.5 s per pair): the model still holds the GPU.
-    return [seq_metrics.ImageMetrics(), seq_metrics.TemporalMetrics(device='cpu')]
+    return [image_quality, seq_metrics.TemporalMetrics(device='cpu'), seq_metrics.GeometricJitter(jitter_region)]
 
 
-def load_sequence(opt, heldout_camera_ids):
-    """Builds the dataset from the first val_loader_params entry and checks the held-out cameras on disk.
+def load_sequence(opt, heldout_camera_ids, fixed_view_input_camera=None):
+    """Builds the dataset from the first val_loader_params entry and checks the held-out cameras on disk, or, in a
+    flicker-only run, that the fixed-view input camera is an input on every frame.
 
-    Raises HeldOutCameraError before the model is loaded if a held-out camera is incomplete.
+    Raises HeldOutCameraError or FixedViewCameraError before the model is loaded.
     """
     params = opt.val_loader_params[0]
     dataset = data.get_dataset_cls(params['cls'])(**params['kwargs']['dataset_kwargs'])
     capture = single_capture(dataset)
     check_heldout_cameras(capture, heldout_camera_ids, frame_ids(capture))
-    return SequenceFrames(capture, heldout_camera_ids)
+    if fixed_view_input_camera is not None:
+        check_fixed_view_input_camera(capture, fixed_view_input_camera, frame_ids(capture))
+    return SequenceFrames(capture, heldout_camera_ids, fixed_view_input_camera)
 
 
-def run_frames(runner, plan, panels, collectors, video, preview):
-    """Forward pass per source frame, then metrics and grid frames for it. Returns the input camera IDs per frame.
+@gin.configurable()
+def build_predictor(runner, texture_filter_sigma: float = None, inference_mode: str = None
+                    ) -> seq_predictors.FramePredictor:
+    """How each frame's Gaussian texture is predicted.
 
-    The preview gets the first grid frame of every source frame, so it shows each source frame exactly once.
+    inference_mode: 'per_frame' (one forward pass per frame), or windowed inference on clips of
+      `opt.clip_length` frames, keeping each frame from one window: 'sliding' (the window from one frame
+      before it) or 'block' (non-overlapping windows); see match/sequence_eval/windows.py. None picks
+      'sliding' for a temporal checkpoint (`opt.temporal`) and 'per_frame' otherwise. Windowed runs write
+      an `inference` section (mode, and each frame's window start and slot) to metrics.json.
+    texture_filter_sigma: if set, the per-frame textures are smoothed over time by a centred Gaussian of
+      this width in frames (the temporal-filter baseline, match/sequence_eval/texture_filter.py); off by
+      default. Per-frame inference of a per-frame checkpoint only.
     """
-    sequence = plan.sequence
+    opt = runner.opt
+    mode = seq_predictors.resolve_inference_mode(opt.temporal, inference_mode)
+    if texture_filter_sigma is not None and (opt.temporal or mode != 'per_frame'):
+        raise ValueError('The texture filter is the baseline for per-frame MATCH: it cannot run on a temporal '
+                         f'checkpoint or with windowed inference (temporal={opt.temporal}, inference_mode={mode!r})')
+    if mode == 'per_frame':
+        predictor = seq_predictors.PerFramePredictor(forward=seq_predictors.frame_forward(runner))
+        if texture_filter_sigma is not None:
+            predictor = seq_predictors.TextureFilterPredictor(predictor, sigma=texture_filter_sigma)
+        return predictor
+    return seq_predictors.WindowedPredictor(seq_predictors.clip_forward(runner), clip_length=opt.clip_length,
+                                            mode=mode)
+
+
+def load_batches(runner, sequence):
+    """Yields the batch (B=1, on the runner's device) of every frame of the sequence, in order."""
     num_workers = runner.opt.val_loader_params[0]['kwargs']['dataloader_kwargs'].get('num_workers', 0)
     loader = torch.utils.data.DataLoader(sequence, batch_size=1, shuffle=False, num_workers=num_workers)
-    model = runner.get_unwrapped_model()
+    for i, sample in enumerate(loader):
+        batch = data_util.MatchBatch(sample)
+        batch.to_device(runner.device)
+        frame = batch['frame'][0]
+        if frame != sequence.frame_ids[i]:
+            raise FrameLoadError(f'Expected frame {sequence.frame_ids[i]} at position {i}, got {frame}')
+        yield batch
+
+
+def predicted_in_order(frames, frame_ids):
+    """Passes the predictor's frames through, raising FrameLoadError unless they are exactly the sequence, in order."""
+    n = 0
+    for frame in frames:
+        emitted = frame.batch['frame'][0]
+        if n == len(frame_ids) or frame.frame_index != n or emitted != frame_ids[n]:
+            expected = f'frame {frame_ids[n]} at position {n}' if n < len(frame_ids) else 'no more frames'
+            raise FrameLoadError(f'The predictor emitted frame {emitted} at position {frame.frame_index}, '
+                                 f'expected {expected}')
+        yield frame
+        n += 1
+    if n != len(frame_ids):
+        raise FrameLoadError(f'The predictor stopped after {n} of {len(frame_ids)} frames')
+
+
+def run_frames(runner, plan, predictor, panels, collectors, video, preview):
+    """Metrics and grid frames for every frame the predictor emits, in frame order. Returns the input camera IDs per frame.
+
+    The predictor reads the frames' batches and may read several before it emits one. The preview gets the
+    first grid frame of every source frame, so it shows each source frame exactly once.
+    """
+    sequence = plan.sequence
     input_cameras = {}
     with torch.autocast('cuda', dtype=torch.float16), torch.no_grad():
-        for i, sample in enumerate(tqdm.tqdm(loader, desc='Frames')):
-            batch = data_util.MatchBatch(sample)
-            batch.to_device(runner.device)
-            frame = batch['frame'][0]
-            if frame != sequence.frame_ids[i]:
-                raise FrameLoadError(f'Expected frame {sequence.frame_ids[i]} at position {i}, got {frame}')
-            input_cameras[frame] = [str(c) for c in batch['camera'][0].tolist()]
+        frames = predicted_in_order(predictor.predict(load_batches(runner, sequence)), sequence.frame_ids)
+        for predicted in tqdm.tqdm(frames, desc='Frames', total=len(sequence)):
+            predicted = predicted.to(runner.device)
+            i, batch = predicted.frame_index, predicted.batch
+            input_cameras[batch['frame'][0]] = [str(c) for c in batch['camera'][0].tolist()]
 
-            gaussians = model.mask_gaussians(runner.model(batch, func_name='forward_gaussians'))
-            ctx = build_frame_context(runner, batch, gaussians, plan, frame_index=i)
+            ctx = build_frame_context(runner, batch, predicted.gaussians, plan, frame_index=i)
             for collector in collectors:
                 collector.add_frame(ctx)
             for k, grid in seq_panels.render_grid_frames(panels, ctx):
                 video.write(k, grid)
                 if k == ctx.output_frame_indices[0]:
                     preview.write(i, grid)
-            del ctx, gaussians, batch
+            del ctx, predicted, batch
     return input_cameras
 
 
@@ -103,15 +180,27 @@ def write_outputs(out_dir, video, preview, metrics):
 
 @gin.configurable()
 def eval_sequence(opt: Options, out_dir: str = None, heldout_camera_ids: list = None, fps: int = 24,
-                  capture_fps: int = 90, preview_fps: int = 10, store_config_files: list = ()):
-    """Evaluates the pretrained model on every frame of the configured segment. See the module docstring."""
-    if not out_dir or not heldout_camera_ids:
-        raise ValueError('eval_sequence.out_dir and eval_sequence.heldout_camera_ids must be set in the config')
-    heldout_camera_ids = [str(c) for c in heldout_camera_ids]
-    sequence = load_sequence(opt, heldout_camera_ids)  # fails before anything is loaded or written
+                  capture_fps: int = 90, preview_fps: int = 10, store_config_files: list = (),
+                  fixed_view_input_camera: str = None):
+    """Evaluates the pretrained model on every frame of the configured segment. See the module docstring.
+
+    Set either heldout_camera_ids (the fixed view is the one closest to frontal) or, for a flicker-only run,
+    fixed_view_input_camera (an input camera).
+    """
+    if not out_dir:
+        raise ValueError('eval_sequence.out_dir must be set in the config')
+    heldout_camera_ids = [str(c) for c in heldout_camera_ids or []]
+    if bool(heldout_camera_ids) == (fixed_view_input_camera is not None):
+        raise ValueError('Set exactly one of eval_sequence.heldout_camera_ids and '
+                         'eval_sequence.fixed_view_input_camera (the input camera of a flicker-only run), got '
+                         f'{heldout_camera_ids} and {fixed_view_input_camera!r}')
+    # fails before anything is loaded or written
+    sequence = load_sequence(opt, heldout_camera_ids, fixed_view_input_camera)
     capture = sequence.capture
+    fixed_view_camera = (closest_to_frontal(capture, heldout_camera_ids) if heldout_camera_ids
+                         else str(fixed_view_input_camera))
     plan = SequencePlan(sequence, schedule=seq_outputs.output_frame_schedule(sequence.frame_ids, fps, capture_fps),
-                        fixed_view_camera=closest_to_frontal(capture, heldout_camera_ids))
+                        fixed_view_camera=fixed_view_camera)
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -124,19 +213,21 @@ def eval_sequence(opt: Options, out_dir: str = None, heldout_camera_ids: list = 
     runner.eval()
 
     panels = build_panels(plan, opt)
-    collectors = build_metric_collectors()
+    collectors = build_metric_collectors(plan, jitter_region(runner.get_unwrapped_model()))
     video = seq_outputs.GridVideoWriter(out_dir, n_frames=plan.n_output_frames, fps=fps)
     preview = seq_outputs.GridVideoWriter(out_dir, n_frames=len(sequence), fps=preview_fps,
                                           name=seq_outputs.PREVIEW_VIDEO)
-    input_cameras = run_frames(runner, plan, panels, collectors, video, preview)
+    predictor = build_predictor(runner)
+    input_cameras = run_frames(runner, plan, predictor, panels, collectors, video, preview)
 
     metrics = {
         'model': {'path': opt.load_pretrained_model, 'checkpoint': runner.pretrained_model_iter},
         'subject': capture.sid,
-        'segments': sorted(set(capture.framelist.seg_id.tolist())),
+        'segments': segment_ids(capture),
         'frames': sequence.frame_ids,
         'heldout_cameras': heldout_camera_ids,
         'fixed_view_camera': plan.fixed_view_camera,
+        'fixed_view_kind': 'input' if plan.fixed_view_is_input else 'heldout',
         'input_cameras': input_cameras,
         'video': {'file': seq_outputs.GRID_VIDEO, 'fps': fps, 'capture_fps': capture_fps,
                   'n_frames': plan.n_output_frames, 'panels': [p.label for p in panels]},
@@ -144,11 +235,10 @@ def eval_sequence(opt: Options, out_dir: str = None, heldout_camera_ids: list = 
         'preview': {'file': seq_outputs.PREVIEW_VIDEO, 'fps': preview_fps, 'n_frames': len(sequence),
                     'output_frames': list(sequence.frame_ids)},
     }
-    for collector in collectors:
-        sections = collector.finish()
+    for source, sections in [(predictor, predictor.metrics())] + [(c, c.finish()) for c in collectors]:
         clash = set(sections) & set(metrics)
         if clash:
-            raise KeyError(f'{type(collector).__name__} returned metrics sections that already exist: {clash}')
+            raise KeyError(f'{type(source).__name__} returned metrics sections that already exist: {clash}')
         metrics.update(sections)
     write_outputs(out_dir, video, preview, metrics)
     runner.logger.info(f'Wrote {out_dir / seq_outputs.GRID_VIDEO}, {out_dir / seq_outputs.PREVIEW_VIDEO}, '

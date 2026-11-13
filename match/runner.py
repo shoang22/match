@@ -18,6 +18,7 @@ import lpips
 from absl import flags
 from match.options import Options
 from match import data, models
+from match.models import match_model
 from match.utils.log_experiment_util import TensorBoardLogger
 from match.utils import general_util, vis_util, log_console_util, data_util
 import gin
@@ -211,6 +212,7 @@ class MatchRunner:
             "l1",
             "ssim",
             "lpips",
+            "temporal_loss",
         ]:
             weight_name = k + "_weight"
             weight_val = getattr(self.opt, weight_name)
@@ -233,10 +235,11 @@ class MatchRunner:
         self.lpips_loss.is_floating_point = types.MethodType(is_floating_point, self.lpips_loss)
 
     def init_optimizer(self):
-        params_to_optimize = filter(lambda p: p.requires_grad, self.model.parameters())
-        optimizer = models.get_optimizer(params=params_to_optimize, **self.opt.optimizer)
+        param_groups = match_model.optimizer_param_groups(self.model, self.opt)
+        optimizer = models.get_optimizer(params=param_groups, **self.opt.optimizer)
         self.optimizer = optimizer
-        self.params_to_optimize = list(params_to_optimize)
+        # a list, not the iterator the optimizer consumed: train_step clips the gradient norm over these
+        self.params_to_optimize = [p for group in param_groups for p in group['params']]
         return optimizer
 
     def init_scheduler(self):
@@ -316,6 +319,7 @@ class MatchRunner:
                     self.model,
                     self.accelerator,
                     strict=self.opt.load_pretrained_model_strict,
+                    allow_missing=match_model.checkpoint_allow_missing(self.opt),
                 )
         self.pretrained_model_iter = ckpt_iter
         return self.model, ckpt_iter
@@ -328,7 +332,10 @@ class MatchRunner:
 
         # (Optional) Load pretrained model or checkpoint
         ckpt_path = general_util.get_ckpt_path(str(ckpt_dir), opt.resume_from_iter)
-        if ckpt_path is None:  # try to load pretrained network
+        fine_tune = opt.temporal if opt.fine_tune is None else opt.fine_tune
+        if ckpt_path is None and fine_tune:
+            logger.info("Fine-tuning from the pretrained weights: step 0, fresh optimizer and LR schedule\n")
+        elif ckpt_path is None:  # try to load pretrained network
             # Load a pretrained model
             if opt.load_pretrained_model is not None:
                 self.logger.info(
@@ -340,7 +347,8 @@ class MatchRunner:
                     opt.load_pretrained_model_ckpt,
                 )
         if ckpt_path is None:
-            logger.info("Training from scratch\n")
+            if not fine_tune:
+                logger.info("Training from scratch\n")
         else:
             logger.info(f"Loading checkpoint from [{ckpt_path}]\n")
             local_ckpt_path = f"{self.local_tmp_dir}/resume_ckpt"
@@ -839,6 +847,8 @@ class MatchRunner:
         mem = psutil.virtual_memory()
         logs["Resources/mem_total(GB)"] = mem.total / (1024**3)
         logs["Resources/mem_avail(GB)"] = mem.available / (1024**3)
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats(accelerator.device)
 
         with accelerator.accumulate(model):
             outputs = model(
@@ -867,7 +877,11 @@ class MatchRunner:
         
         if accelerator.sync_gradients:
             self.global_update_step += 1
-        
+        if torch.cuda.is_available():
+            # this process's peak tensor memory during the step (the nvml figure above is all processes, now)
+            logs["Resources/GPU/peak_allocated(GB)"] = torch.cuda.max_memory_allocated(accelerator.device) / (1024**3)
+            logs["Resources/GPU/peak_reserved(GB)"] = torch.cuda.max_memory_reserved(accelerator.device) / (1024**3)
+
         
         return logs
       

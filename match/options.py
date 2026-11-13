@@ -27,6 +27,11 @@ class Options:
   load_pretrained_model: str | None = None
   load_pretrained_model_ckpt: int = -1
   load_pretrained_model_strict: bool = True
+  # A fine-tune takes only the pretrained model's weights (loaded when the runner is built): with no
+  # checkpoint of its own in base_folder/checkpoints it starts at step 0 with a fresh optimizer and LR
+  # schedule. Otherwise (False) such a run resumes the pretrained run's full training state: optimizer,
+  # scheduler, RNG and step. None: a fine-tune for temporal MATCH, not for per-frame MATCH.
+  fine_tune: bool | None = None
   initial_eval: bool = False
   log_level: str = "INFO"
   train_total_batch_size: int | None = None  # will be calculated later
@@ -107,6 +112,25 @@ class Options:
   num_heads: int = 8
   grad_checkpoint: bool = True
 
+  ## Temporal MATCH (divided space-time attention over UV tokens)
+  # Adds a temporal attention sublayer to every block. Off: the model and its checkpoints are per-frame MATCH.
+  temporal: bool = False
+  # frame slots of the frame embedding: the longest clip the temporal model accepts (datasets: clip_length)
+  clip_length: int = 4
+  # With `temporal`, only the temporal parameters train; everything else has gradients disabled.
+  temporal_freeze_spatial: bool = True
+  # Ablation (pixel-aligned temporal attention): every block also gets a temporal sublayer over image tokens,
+  # one sequence per (camera, image patch position). Needs `temporal`. The method keeps this off.
+  temporal_image_tokens: bool = False
+  # Learning rate of the spatial (non-temporal) weights when they train (temporal_freeze_spatial = False):
+  # they become a second optimizer group, the temporal parameters keep optimizer['lr']. None: one group at
+  # optimizer['lr']. Must stay None while the spatial weights are frozen or without `temporal`.
+  temporal_spatial_lr: float | None = None
+  # Per-frame MATCH only (temporal = False): train just the offset head, the output layers that predict each
+  # texel's offset and attributes from its UV token (out_xyz, out_rgb, out_scale, out_rotation, out_opacity).
+  # Every other weight gets requires_grad False. The "per-frame MATCH on clips + temporal loss" cell (#38).
+  train_offset_head_only: bool = False
+
   ## Rendering
   render_type: Literal[
       "default",
@@ -138,6 +162,12 @@ class Options:
   ssim_weight: List[float] | float = 0.
   l1_weight: List[float] | float = 0.
   geometry_loss_weights_by_part:Dict[str, float] = field(default_factory=lambda:dict(__default__=1.))
+  # Temporal trajectory loss (#38), on clips of 3+ frames only: per clip, the mean over texels (weighted by
+  # geometry_loss_weights_by_part) and frame triples of each texel's squared second difference over time, of its
+  # final position in mm (TEMPEH part + offset) plus temporal_loss_rgb_weight times that of its colour. Added once
+  # per clip (not per frame) at temporal_loss_weight. 0 (default): off, training is unchanged.
+  temporal_loss_weight: List[float] | float = 0.
+  temporal_loss_rgb_weight: float = 1.
 
   # Visualization
   vis_idx: int = 0

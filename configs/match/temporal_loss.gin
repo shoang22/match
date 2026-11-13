@@ -1,0 +1,15 @@
+# The temporal trajectory loss (#38), included by the training configs of the 2x2 cells with the temporal loss on (and their smoke
+# tests). Not a training config on its own.
+#
+# Per clip: the mean over texels and frame triples of |x[t+1] - 2 x[t] + x[t-1]|^2 for each texel's final position x in mm
+# (TEMPEH part + offset, so the offsets can learn to cancel TEMPEH's jitter), plus temporal_loss_rgb_weight times the same for its
+# colour. Added to the clip's loss (MATCH's losses summed over its frames) at temporal_loss_weight, once per clip.
+#
+# The weights are the MATCH-convention baseline: MATCH weighs its squared-mm geometry losses at 1e-3 and its colour losses at ~1,
+# so the position term gets 1e-3 and the colour term 1e-3 x 1000 = 1. On TCE049 the pretrained model's terms are 10-30 mm^2 and
+# 0.07-0.12 per clip, so the loss adds 0.08-0.15 per clip, 70-90% of it colour. Balancing the two terms at initialization is
+# follow-up #44.
+
+Options:
+  temporal_loss_weight = 1e-3
+  temporal_loss_rgb_weight = 1000.

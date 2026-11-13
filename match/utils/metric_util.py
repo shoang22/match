@@ -17,6 +17,8 @@ from typing import NamedTuple
 
 import torch
 
+from match.utils import math_util
+
 
 def _prepare(pred: torch.Tensor, real: torch.Tensor, mask: torch.Tensor):
     """Return pred, real as (1, C, H, W) float and mask as (1, 1, H, W) bool."""
@@ -42,13 +44,26 @@ def masked_psnr(pred: torch.Tensor, real: torch.Tensor, mask: torch.Tensor) -> f
 
     Returns math.inf when pred and real are identical inside the mask (no cap).
     """
-    pred, real, mask = _prepare(pred, real, mask)
-    m = mask.expand_as(pred)
-    mse = ((pred[m] - real[m]) ** 2).mean().item()
+    mse = masked_l2(pred, real, mask)
     if mse == 0:
         return math.inf
     return -10.0 * math.log10(mse)
 
+
+
+def masked_l1(pred: torch.Tensor, real: torch.Tensor, mask: torch.Tensor) -> float:
+    """Mean absolute error over the foreground pixels (all channels), for images in [0, 1]."""
+    pred, real, mask = _prepare(pred, real, mask)
+    m = mask.expand_as(pred)
+    return (pred[m] - real[m]).abs().mean().item()
+
+
+def masked_l2(pred: torch.Tensor, real: torch.Tensor, mask: torch.Tensor) -> float:
+    """Mean squared error over the foreground pixels (all channels), for images in [0, 1]; masked_psnr is
+    -10 log10 of it."""
+    pred, real, mask = _prepare(pred, real, mask)
+    m = mask.expand_as(pred)
+    return ((pred[m] - real[m]) ** 2).mean().item()
 
 def _fill_background(pred, real, mask, background: float):
     """Paint the same colour over the background of both images."""
@@ -301,3 +316,25 @@ def flow_aligned_error(frames: torch.Tensor, masks: torch.Tensor, flow=None,
     warped_mask = _warp(masks[:-1].float(), backward) > 0.999
     valid = masks[1:] & warped_mask & _consistent(forward, backward) & ~_motion_boundary(backward)
     return _scores([_masked_mean_abs(frames[i + 1], warped[i], valid[i]) for i in range(n)])
+
+
+# --- Geometric jitter ---------------------------------------------------------
+
+
+def geometric_jitter(positions: torch.Tensor, valid: torch.Tensor = None) -> list:
+    """Size of the second difference of each texel's position, averaged over the valid texels.
+
+    positions: (T, 3, N) per-texel positions over T consecutive frames.
+    valid: (N,) bool, the texels to average over; all of them if None.
+    Returns T - 2 floats, entry t for frames (t, t + 1, t + 2), i.e. keyed by the middle frame t + 1:
+    the mean over valid texels of |x[t+2] - 2 x[t+1] + x[t]|, in the units of `positions`. Constant and
+    linear motion score 0. With no valid texels an entry is nan; with T < 3 the list is empty.
+    """
+    if positions.dim() != 3 or positions.shape[1] != 3:
+        raise ValueError(f'expected positions (T, 3, N), got {tuple(positions.shape)}')
+    if valid is not None:
+        positions = positions[:, :, valid.to(positions.device)]
+    if positions.shape[-1] == 0:
+        return [math.nan] * max(positions.shape[0] - 2, 0)
+    second_diff = math_util.second_difference(positions, dim=0)  # (T-2, 3, N)
+    return second_diff.norm(dim=1).mean(dim=1).tolist()

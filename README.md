@@ -189,6 +189,12 @@ We demonstrate how a set of registered Gaussian splat textures of a person predi
     ```
 - Full run (~27 min). Use the same command with `configs/match/eval_sequence_SEN_a_good_morrow.gin`; output goes to `experiments/match/eval_sequence/SEN_a_good_morrow`. It uses the whole 24GB GPU, so nothing else may hold GPU memory. Leave `PYTORCH_CUDA_ALLOC_CONF` unset.
 - Check the outputs: `python -m pytest tests/test_eval_sequence_outputs.py tests/test_eval_sequence_smoketest.py`.
+- `background 1` with temporal MATCH (flicker-only, sliding windows). This runs all 30 frames of the `background 1` capture through temporal MATCH at initialization, i.e. the pretrained checkpoint with no-op temporal sublayers, in sliding windows of 4 frames. Every camera is an input, so there are no held-out cameras: the fixed view is input camera 0, and `metrics.json` has flicker and jitter scores but no PSNR/SSIM/LPIPS (its `quality_scores` entry says they were not computed and why). Its `inference` section records each frame's window start and slot. First make the masks and the TEMPEH predictions for all 30 frames (steps 1 and 2 in the header of `configs/match/eval_sequence_background1_flicker.gin`). Output goes to `experiments/match/eval_sequence/background1_temporal`:
+    ```bash
+    PYTHONPATH=$(pwd) PYOPENGL_PLATFORM=egl torchrun --standalone --nnodes=1 --nproc-per-node=1 \
+      scripts/match/eval_sequence.py --gin_configs configs/match/eval_sequence_background1_temporal.gin
+    ```
+    For per-frame MATCH, use `configs/match/eval_sequence_background1_flicker.gin` instead (output in `experiments/match/eval_sequence/background1_flicker`). Check both runs with `python -m pytest tests/test_eval_sequence_outputs.py tests/test_eval_sequence_temporal_outputs.py`.
 
 ## Training TEMPEH
 - Download the entire ava-256 dataset using `condor/run.py configs/data/download_ava256_full.gin`
@@ -196,6 +202,8 @@ We demonstrate how a set of registered Gaussian splat textures of a person predi
 
 ## Training MATCH
 Coming soon...
+
+Gradient clipping now applies to every training run, per-frame MATCH included. Before, the runner clipped the gradient norm over a parameter iterator the optimizer had already used up, so training silently never clipped. It now clips to `max_grad_norm` (default 1.0) over the trainable parameters, so per-frame runs, resumed pretrained runs too, can train differently than before.
 
 ### Single-GPU smoke test
 `configs/match/train_match_smoketest.gin` runs 50 training steps (with evals at steps 25 and 50) on the quickstart data to check that the training loop works. It is not a real training run. It was tested on a single RTX 4090 (24GB) under WSL2, peaking at ~17GB of GPU memory.
@@ -215,6 +223,36 @@ To fit in 24GB, the config uses 4 input views and a 32x32 grid of UV patches (`u
 - `EGL_NOT_INITIALIZED` / `failed to open /dev/dri/renderD128: Permission denied`: the render device is owned by a group your user is not in. Check with `ls -ln /dev/dri`, then either run `sudo chmod 666 /dev/dri/renderD128` (resets when WSL restarts) or add yourself to the owning group permanently, e.g. for gid 992: `sudo groupadd -g 992 render992 && sudo usermod -aG render992 $USER`, followed by `wsl --shutdown`.
 - `pyglet.gl.ContextException: Could not create GL context` during evaluation: `PYOPENGL_PLATFORM=egl` is not set.
 - `XStartError: Xvfb program closed ... server already running`: an Xvfb from a crashed run still holds display `:99`. Kill it with `pkill -f "[X]vfb -br.*:99"`.
+
+### Temporal MATCH clip-training smoke test
+`configs/match/train_temporal_match_smoketest.gin` runs 4 clip steps of temporal MATCH, then one validation pass and one checkpoint, to check that clip training works. It uses the default temporal training config, `configs/match/train_temporal_match.gin` (the pretrained uv_res_1024 weights, clips of 4 frames, 12 input and 12 render views, gradient checkpointing, spatial weights and Sapiens frozen), with different data. It is not a real training run.
+
+- No Ava-256 training subject is on disk, so the smoke test trains on the held-out subject TCE049: its `SEN_a_good_morrow_to_you_my_boy` segment, the only one with TEMPEH predictions at every frame. Create them first with [Evaluating pretrained MATCH on a sequence](#evaluating-pretrained-match-on-a-sequence), step 2. The default config never trains on held-out subjects.
+- Run the smoke test:
+    ```bash
+    PYOPENGL_PLATFORM=egl PYTHONPATH=$(pwd) PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+      torchrun --standalone --nnodes=1 --nproc-per-node=1 scripts/match/train_match.py \
+      --gin_configs configs/match/train_temporal_match_smoketest.gin
+    ```
+    Results are written to `experiments/match/temporal_match_smoketest`. Delete that folder before rerunning: a run resumes its own checkpoints.
+
+On a single RTX 4090 (24GB) under WSL2, one step on a clip of 4 frames x 12 views takes ~8.3 s and peaks at 16.9 GiB of allocated GPU memory (`torch.cuda.max_memory_allocated`, logged per step as `Resources/GPU/peak_allocated(GB)`), with `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`. Without that setting the caching allocator reserves ~24.9 GiB, more than the card has, and a step takes ~10.2 s. The first step takes ~20 s. The whole smoke test takes a few minutes.
+
+The step fits because, with gradient checkpointing, the frames of a clip share only the temporal sublayers: each block's spatial part, the rendering and the losses are recomputed for backward one frame at a time, LPIPS one image at a time, and the frozen correspondence search and Sapiens encoder run frame by frame. None of this changes what is computed. Under WSL2, a run that needs more than 24GB does not fail with an out-of-memory error. The driver moves the excess into system memory and the run gets 5-10x slower, so check the logged peak, not just that the run finishes.
+
+### Temporal trajectory loss
+The option `temporal_loss_weight` (default 0, off) adds a loss on each texel's trajectory over a clip of 3 or more frames: the mean over texels and frame triples of the squared second difference `|x[t+1] - 2 x[t] + x[t-1]|^2` of the texel's final position in mm (TEMPEH part plus offset), plus `temporal_loss_rgb_weight` times the same for its colour. It is added once per clip. Texels are weighted by `geometry_loss_weights_by_part`. Training logs the unweighted terms as `training/temporal_xyz_loss` and `training/temporal_rgb_loss`.
+
+Two configs train with it, both with `temporal_loss_weight = 1e-3` and `temporal_loss_rgb_weight = 1000` from `configs/match/temporal_loss.gin`. These follow MATCH's loss convention (squared-mm geometry terms at 1e-3, colour terms at ~1), so the position term is weighted 1e-3 and the colour term 1; balancing the two at initialization is follow-up #44.
+- `configs/match/train_temporal_match_temporal_loss.gin`: temporal MATCH, i.e. `configs/match/train_temporal_match.gin` plus the loss.
+- `configs/match/train_match_clips_temporal_loss.gin`: per-frame MATCH trained on clips, with no temporal sublayers. Only the offset head trains (`train_offset_head_only`: the output layers that predict each texel's offset and attributes, 1.8M parameters against the temporal cells' 12.6M), at a learning rate of 4e-6 (`configs/match/per_frame_match_on_clips.gin`). Every other weight stays frozen, as in the temporal cells.
+
+Each one has a `_smoketest.gin` version that runs on the data of the temporal clip-training smoke test above. The command is the same as above, with a different `--gin_configs`. Results go to `experiments/match/<NAME>`. `train_match.py` applies `--gin_bindings` after the configs, so a weight sweep needs no new config file, e.g. `--gin_bindings "Options.temporal_loss_weight = 1e-2" --gin_bindings "NAME = 'temporal_match_temporal_loss_1e-2'"` (a new `NAME` per run, since a run resumes the checkpoints in its folder). On TCE049 the pretrained model's `temporal_xyz_loss` is 10-30 mm² and its `temporal_rgb_loss` 0.07-0.12 per clip, so the loss adds 0.08-0.15 to a clip loss of ~0.77, 70-90% of it from colour. A temporal MATCH step takes ~8.4 s and peaks at 14.7 GiB allocated. A per-frame-on-clips step, which trains only the offset head, takes ~5.3 s and peaks at 12.9 GiB.
+
+### Image-token temporal attention (ablation)
+Temporal MATCH puts temporal attention on UV tokens only. The option `temporal_image_tokens` (default off, needs `temporal`) also gives every block a temporal sublayer over image tokens: one sequence of T frames per (camera, image patch position), with the same norm, zero-initialized output projection and frame embedding as the UV-token sublayer. At initialization the model is still per-frame MATCH. `configs/match/train_temporal_match_image_tokens.gin` is `configs/match/train_temporal_match.gin` with only this switch on (and its own output folder). `configs/match/train_temporal_match_image_tokens_smoketest.gin` is the matching smoke test, run with the command above.
+
+A 12-view frame has 61,440 image tokens against 4,096 UV tokens. To keep the step on a 24GB card, the temporal sublayers run 4,096 token positions at a time, and a block with an image-token sublayer is checkpointed as a whole on top of the per-frame checkpoints described above. Neither changes what is computed. A step on a clip of 4 frames x 12 views then takes ~11.2 s and peaks at 17.1 GiB allocated, against ~8.4 s and 16.9 GiB without the switch (with `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`; reserved ~20.6 GiB, ~22.3 GiB in use on the card). With `expandable_segments` the driver cannot spill into system memory, so running out of memory fails with `CUDA driver error: out of memory` instead of slowing down.
 
 ### Calibrated-capture smoke test
 A one-frame inference run on a real capture: interim masks, TEMPEH, then MATCH camera sweeps. It checks that the whole [calibrated-capture pipeline](#running-match-on-your-own-calibrated-capture) works on real data; it says little about output quality. It was run on frame 0 of `background 1` (12 cameras, 1024×1024, outdoor) on a single RTX 4090 under WSL2, with the shipped configs and only the paths changed.

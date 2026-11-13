@@ -9,7 +9,7 @@ from match.models import image_feature_net
 from match.models.gsplat_renderer import gsplat_renderer
 from match.models.networks.attention import *
 from match.options import Options
-from match.utils import file_util, image_util, mesh_util, op_util, data_util, general_util, geo_util, uv_util
+from match.utils import file_util, image_util, mesh_util, op_util, data_util, general_util, geo_util, uv_util, math_util
 import torch
 from torch import nn
 from torch import Tensor
@@ -17,6 +17,67 @@ import torch.nn.functional as tF
 import trimesh
 import torchmetrics
 from functools import partial
+
+
+def checkpoint_allow_missing(opt: Options):
+  """Missing checkpoint keys a pretrained load accepts: temporal MATCH's fresh temporal parameters.
+
+  For per-frame MATCH this is None and the load follows `opt.load_pretrained_model_strict` as before.
+  """
+  return is_temporal_parameter if opt.temporal else None
+
+
+def _sample_slice(value, i: int, n_samples: int):
+  """Sample i of a batch value: a tensor or list with one entry per sample, kept as a batch of one."""
+  if isinstance(value, Tensor) and value.ndim > 0 and len(value) == n_samples:
+    return value[i:i + 1]
+  if isinstance(value, (list, tuple)) and len(value) == n_samples:
+    return value[i:i + 1]
+  return value
+
+
+def temporal_trajectory_loss(trajectories: Tensor, texel_weights: Tensor | None = None) -> Tensor:
+  """Per clip, the masked mean over texels and frame triples of |x[t+1] - 2 x[t] + x[t-1]|^2.
+
+  trajectories: (B, T, L, C), each texel's value (e.g. position, colour) over a clip's T frames.
+  texel_weights: (L,) weight of each texel in the mean; 0 leaves a texel out. All texels count equally if None.
+  Returns (B,). Constant and linear trajectories cost 0, and so does a clip of fewer than 3 frames.
+  """
+  B, T, L, _ = trajectories.shape
+  if T < 3:
+    return trajectories.new_zeros(B)
+  second_diff = math_util.second_difference(trajectories, dim=1)  # (B, T-2, L, C)
+  squared = second_diff.square().sum(dim=-1)  # (B, T-2, L)
+  if texel_weights is None:
+    return squared.mean(dim=(1, 2))
+  texel_weights = texel_weights.to(squared)
+  return (squared * texel_weights).sum(dim=2).mean(dim=1) / texel_weights.sum()
+
+
+# The output layers that predict each texel's offset and attributes from its UV token.
+OFFSET_HEAD_LAYERS = ('out_xyz', 'out_rgb', 'out_scale', 'out_rotation', 'out_opacity')
+
+
+def is_offset_head_parameter(name: str) -> bool:
+  """True for parameters (state-dict keys) of the offset head, `OFFSET_HEAD_LAYERS`."""
+  return name.split('.')[0] in OFFSET_HEAD_LAYERS
+
+
+def optimizer_param_groups(model: nn.Module, opt: Options) -> list[dict]:
+  """The trainable parameters of `model` as optimizer parameter groups.
+
+  The temporal parameters (if any) form the first group, at the optimizer's learning rate. The other
+  trainable parameters form a second group, at `opt.temporal_spatial_lr` if set. Frozen parameters
+  (requires_grad False) are left out. Empty groups are dropped.
+  """
+  temporal, spatial = [], []
+  for name, param in model.named_parameters():
+    if param.requires_grad:
+      (temporal if is_temporal_parameter(name) else spatial).append(param)
+  spatial_group = {'params': spatial}
+  if opt.temporal_spatial_lr is not None:
+    spatial_group['lr'] = opt.temporal_spatial_lr
+  return [g for g in ({'params': temporal}, spatial_group) if g['params']]
 
 
 class MatchModel(nn.Module):
@@ -76,11 +137,16 @@ class MatchModel(nn.Module):
     )
 
     # Transformer backbone
+    if opt.temporal_image_tokens and not opt.temporal:
+      raise ValueError('temporal_image_tokens adds image-token sublayers to the temporal model; it needs temporal = True')
     self.transformer = CorrespondenceAwareTransformer(
         opt.num_blocks,
         opt.dim,
         opt.num_heads,
         llama_style=opt.llama_style,
+        temporal=opt.temporal,
+        clip_len=opt.clip_length,
+        temporal_image_tokens=opt.temporal_image_tokens,
     )
     if opt.grad_checkpoint:
       self.transformer.set_grad_checkpointing()
@@ -133,7 +199,21 @@ class MatchModel(nn.Module):
     for k, v in ava2flame_mapping.items():
         ava2flame_mapping[k] = torch.from_numpy(v)
     self.ava2flame_mapping = ava2flame_mapping
-      
+
+    if opt.temporal_spatial_lr is not None and not (opt.temporal and not opt.temporal_freeze_spatial):
+      raise ValueError(
+          'temporal_spatial_lr is the learning rate of trainable spatial weights next to the temporal ones; it'
+          ' needs temporal = True and temporal_freeze_spatial = False')
+    if opt.temporal and opt.temporal_freeze_spatial:
+      for name, param in self.named_parameters():
+        param.requires_grad_(is_temporal_parameter(name))
+    if opt.train_offset_head_only:
+      if opt.temporal:
+        raise ValueError('train_offset_head_only is for per-frame MATCH (temporal = False); temporal MATCH chooses '
+                         'what trains with temporal_freeze_spatial')
+      for name, param in self.named_parameters():
+        param.requires_grad_(is_offset_head_parameter(name))
+
     
   def to(self, *args, **kwargs):
     device, dtype, non_blocking, convert_to_format = torch._C._nn._parse_to(*args, **kwargs)
@@ -298,7 +378,13 @@ class MatchModel(nn.Module):
     # sapiens feature extraction
     sapiens_features = None
     if self.use_sapiens_features:
-      sapiens_features = self.sapiens_encoder(einops.rearrange(input_images*.5 + .5, 'b v c h w -> (b v) c h w')) 
+      images_flat = einops.rearrange(input_images*.5 + .5, 'b v c h w -> (b v) c h w')
+      tiles = (self.opt.sapiens_prediction_tiles_sqrt or 1) ** 2
+      # One frame at a time when a frame's views fill whole Sapiens tiles: the tiles are then the same as
+      # in a batch, the encoder's activations don't grow with the batch (a clip folds T frames into it),
+      # and the compiled encoder keeps one input shape.
+      chunk = V if V % tiles == 0 else B * V
+      sapiens_features = torch.cat([self.sapiens_encoder(c) for c in images_flat.split(chunk)])
       sapiens_features = einops.rearrange(sapiens_features, '(b v) c h w -> b v c h w', v=V)
 
     if self.feature_net is None:
@@ -472,24 +558,46 @@ class MatchModel(nn.Module):
       data: Dict[str, Tensor],
       dtype: torch.dtype = torch.float32,
       return_masked_gaussians: bool = False,
+      return_tempeh_xyz: bool = False,
   ):
     """Args:
 
-      data: A dictionary of data.
+      data: A dictionary of data: a batch of frames (image (B, V, 3, H, W)) or a batch of clips with a
+        time axis after the batch axis (image (B, T, V, 3, H, W); see `MatchBatch.fold_clip`).
       dtype: The data type to use.
+      return_tempeh_xyz: also return the TEMPEH part of each texel's position under 'tempeh_xyz'.
 
     returns:
-      dict with keys:
+      dict with keys (a clip batch gets a time axis after the batch axis, (B, T, 1, C, H, W)):
       - xyz: (B, 1, 3, H, W)
       - rgb: (B, 1, 3, H, W)
-      - scale: (B, 1, 1, H, W)
-      - rotation: (B, 1, 3, H, W)
+      - scale: (B, 1, 3, H, W)
+      - rotation: (B, 1, 4, H, W)
       - opacity: (B, 1, 1, H, W)
       - uv: (B, 1, 3, H, W)
+      - tempeh_xyz: (B, 1, 3, H, W), only if return_tempeh_xyz. The TEMPEH coarse surface point at each texel,
+        which xyz adds the predicted offset to (xyz - tempeh_xyz is the offset). Zeros without skip_connection.
+      and, with return_masked_gaussians, the masked Gaussians ((B, (T,) 1, C, L, 1)).
     """
-    b, v, _, h, w = data["uv"].shape
     data = data_util.MatchBatch(data)
-    
+    if not data.is_clip:
+      gaussian_features = self._forward_frame_gaussians(data, dtype, 1, return_tempeh_xyz)
+      if return_masked_gaussians:
+        return gaussian_features, self.mask_gaussians(gaussian_features)
+      return gaussian_features
+
+    frames, clip_len = data.fold_clip()
+    gaussian_features = self._forward_frame_gaussians(frames, dtype, clip_len, return_tempeh_xyz)
+    clip_gaussian_features = data_util.unfold_clip(gaussian_features, clip_len)
+    if return_masked_gaussians:
+      return clip_gaussian_features, data_util.unfold_clip(self.mask_gaussians(gaussian_features), clip_len)
+    return clip_gaussian_features
+
+  def _forward_frame_gaussians(self, data: data_util.MatchBatch, dtype: torch.dtype, clip_len: int,
+                               return_tempeh_xyz: bool = False):
+    """Gaussian textures (B * T, 1, C, H, W) for a batch of frames in which every `clip_len` consecutive
+    samples are the frames of one clip."""
+    b, v, _, h, w = data["uv"].shape
     if self.opt.num_input_views is not None:
       device = data['uv'].device
       if not self.training:
@@ -509,9 +617,12 @@ class MatchModel(nn.Module):
     b, v, _, h, w = data["uv"].shape
     uv = data["uv"].to(torch.float16)  # computing correspondences in float16 to save memory
     downsample_for_computation = self.opt.img_patch_size // 2
-    correspondence_idcs, correspondence_scores = (
+    # One frame at a time: each frame's correspondences depend only on its own UV renders, and the search
+    # holds several GB per frame at full size (b x v x UV patches x image patches boxes), which a clip
+    # folded into the batch would multiply by T.
+    correspondences = [
         uv_util.get_img_uv_patch_correspondences(
-            uv,
+            uv[i:i + 1],
             self.opt.uv_res,
             uv_patch_size=self.opt.uv_patch_size,
             img_patch_size=self.opt.img_patch_size,
@@ -519,8 +630,11 @@ class MatchModel(nn.Module):
             downsample_for_computation=downsample_for_computation,
             return_uv_patch_mask=False,
         )
-    )
-    correspondence_scores = correspondence_scores.to(dtype)
+        for i in range(b)
+    ]
+    correspondence_idcs = torch.cat([idcs for idcs, _ in correspondences])
+    correspondence_scores = torch.cat([scores for _, scores in correspondences]).to(dtype)
+    del correspondences
     x_img = self._get_img_tokens(data, dtype)
     x_uv, uv_xyz, uv_rgb = self._get_uv_tokens(data, dtype=dtype, correspondence_idcs=correspondence_idcs, correspondence_scores=correspondence_scores, return_uv_xyz_rgb=True)
     x_uv, x_img = self.transformer(
@@ -529,15 +643,16 @@ class MatchModel(nn.Module):
         correspondence_idcs=correspondence_idcs,
         correspondence_scores=correspondence_scores,
         nviews=v,
+        clip_len=clip_len,
     )
     x_uv = self.ln_out(x_uv)
     gaussian_features = self._uv_tokens_to_gaussian_feature_textures(x_uv, uv_xyz=uv_xyz, uv_rgb=uv_rgb)
-
-
-    if return_masked_gaussians:
-      return gaussian_features, self.mask_gaussians(gaussian_features)
-    else:
-      return gaussian_features
+    if return_tempeh_xyz:
+      xyz = gaussian_features['xyz']
+      gaussian_features['tempeh_xyz'] = (
+          einops.rearrange(uv_xyz, 'b c h w -> b 1 c h w').to(xyz.dtype) if self.skip_connection
+          else torch.zeros_like(xyz))
+    return gaussian_features
 
   def forward(self, *args, func_name="compute_loss", **kwargs):
     # To support different forward functions for models wrapped by `accelerate`
@@ -637,19 +752,28 @@ class MatchModel(nn.Module):
       force_white_bg: bool = False,
       return_masked_gaussians: bool = False,
   ):
-    outputs = {}
+    """MATCH's losses on a batch of frames, or on a batch of clips (image (B, T, V, 3, H, W)).
 
-    color_name = "image"
+    A clip's frames are separate samples for rendering and every loss term, and its loss is the sum of
+    its frames' losses: per-frame MATCH's loss on each frame, summed over the clip and averaged over the
+    clips of the batch. The logged terms and metrics stay means over frames, comparable with per-frame
+    training. Outputs with a batch axis (images, masked Gaussians) have one sample per frame (B * T).
 
-    gaussian_parameters = self.forward_gaussians(data, dtype)
-    masked_gaussian_parameters = self.mask_gaussians(gaussian_parameters)
-    pred_verts = self.gaussians2mesh(gaussian_parameters) * 1000.0  # in mm
+    With gradient checkpointing, a clip's losses are computed frame by frame and checkpointed, so that the
+    backward pass holds one frame's rendering and LPIPS activations at a time. Every frame of the batch
+    shares the input views, render views and background colour either way.
+    """
+    data = data_util.MatchBatch(data)
+    clip_len = 1
+    if data.is_clip:
+      data, clip_len = data.fold_clip()
+    gaussian_parameters = self._forward_frame_gaussians(data, dtype, clip_len)
+    temporal_outputs = self._temporal_losses(data, gaussian_parameters, clip_len)
 
     # data preprocessing for loss calculation
     output_res = self.opt.output_res
     if output_res is None:
       output_res = self.opt.input_res
-    data = data_util.MatchBatch(data)
     data = data.resize(output_res)
     V = data.V
     device = data.device
@@ -665,6 +789,100 @@ class MatchModel(nn.Module):
     if self.opt.output_bg and not force_white_bg:
       bg_color = general_util.str_to_color(self.opt.output_bg)
       data = data.colorize_bg(bg_color)
+
+    loss_kwargs = dict(
+        lpips_loss=lpips_loss, step=step, dtype=dtype, bg_color=bg_color, render_img=render_img,
+        render_uv=render_uv, render_gauss=render_gauss, log_all=log_all, force_white_bg=force_white_bg,
+        return_masked_gaussians=return_masked_gaussians)
+    if clip_len == 1 or not (self.opt.grad_checkpoint and torch.is_grad_enabled()):
+      outputs = self._losses_on_frames(data, gaussian_parameters, **loss_kwargs)
+      # every term is a mean over the B * T frames, so T times it is the clips' mean of the per-frame sums
+      outputs["loss"] = outputs["loss"] * clip_len
+      return self._add_temporal_losses(outputs, temporal_outputs)
+
+    n_frames = len(gaussian_parameters["xyz"])
+    per_frame = [
+        torch.utils.checkpoint.checkpoint(
+            self._losses_on_frames,
+            data_util.MatchBatch({k: _sample_slice(v, i, n_frames) for k, v in data.items()}),
+            {k: v[i:i + 1] for k, v in gaussian_parameters.items()},
+            use_reentrant=False,
+            **loss_kwargs,
+        )
+        for i in range(n_frames)
+    ]
+    outputs = {}
+    for k, v in per_frame[0].items():
+      values = [frame_outputs[k] for frame_outputs in per_frame]
+      if k == "loss":  # sum over all frames, mean over the clips
+        outputs[k] = torch.stack(values).sum() / (n_frames // clip_len)
+      elif isinstance(v, dict):  # masked Gaussians
+        outputs[k] = {kk: torch.cat([vv[kk] for vv in values]) for kk in v}
+      elif k.startswith("images/"):
+        outputs[k] = torch.cat(values)
+      else:  # logged terms and metrics: mean over frames
+        outputs[k] = torch.stack(values).mean()
+    return self._add_temporal_losses(outputs, temporal_outputs)
+
+  def _temporal_losses(self, frames: data_util.MatchBatch, gaussian_parameters: dict[str, Tensor],
+                       clip_len: int) -> dict[str, Tensor]:
+    """The temporal trajectory loss (Options.temporal_loss_weight) of a batch of clips folded into frames:
+    'temporal_loss', the weighted loss to add once per clip (mean over the clips), and the unweighted terms
+    'temporal_xyz_loss' (final texel positions, mm^2) and 'temporal_rgb_loss' (texel colours), means over the
+    clips, for logging. Empty for clips of fewer than 3 frames. With every weight 0 nothing gets a gradient."""
+    if clip_len < 3:
+      return {}
+    n_clips = len(gaussian_parameters["xyz"]) // clip_len
+    device = gaussian_parameters["xyz"].device
+    dataset_idx = frames.get("dataset_idx", torch.zeros((n_clips * clip_len,), dtype=torch.long))
+    weights = torch.tensor(self.opt.temporal_loss_weight, device=device, dtype=torch.float32)
+    # one weight per dataset (MatchRunner.init_loss_weights), or a single float for every clip
+    weights = weights.expand(n_clips) if weights.ndim == 0 else weights[dataset_idx[::clip_len]]  # (n_clips,)
+    with torch.set_grad_enabled(torch.is_grad_enabled() and bool((weights != 0).any())):
+      masked = self.mask_gaussians({k: gaussian_parameters[k] for k in ("xyz", "rgb")})
+      trajectories = {
+          k: einops.rearrange(v.float(), "(b t) 1 c l 1 -> b t l c", t=clip_len) for k, v in masked.items()}
+      texel_weights = self.masked_gaussian_geometry_loss_weights
+      xyz_loss = temporal_trajectory_loss(
+          trajectories["xyz"] * math_util.MM_PER_WORLD_UNIT, texel_weights)  # (n_clips,), mm^2
+      rgb_loss = temporal_trajectory_loss(trajectories["rgb"], texel_weights)
+      loss = general_util.weight_loss(
+          xyz_loss + self.opt.temporal_loss_rgb_weight * rgb_loss, weights, drop_zero_weights=True)
+    return {"temporal_loss": loss, "temporal_xyz_loss": xyz_loss.detach().mean(),
+            "temporal_rgb_loss": rgb_loss.detach().mean()}
+
+  @staticmethod
+  def _add_temporal_losses(outputs: dict, temporal_outputs: dict[str, Tensor]) -> dict:
+    """`outputs` with the temporal loss added to 'loss' once per clip and its terms logged."""
+    if not temporal_outputs:
+      return outputs
+    outputs = dict(outputs, **{k: v for k, v in temporal_outputs.items() if k != "temporal_loss"})
+    outputs["loss"] = outputs["loss"] + temporal_outputs["temporal_loss"].to(outputs["loss"].dtype)
+    return outputs
+
+  def _losses_on_frames(
+      self,
+      data: data_util.MatchBatch,
+      gaussian_parameters: dict[str, Tensor],
+      lpips_loss: lpips.LPIPS | None,
+      step: int,
+      dtype: torch.dtype,
+      bg_color: list[float],
+      render_img: bool = False,
+      render_uv: bool = False,
+      render_gauss: bool = False,
+      log_all: bool = False,
+      force_white_bg: bool = False,
+      return_masked_gaussians: bool = False,
+  ):
+    """MATCH's losses (mean over the frames) for Gaussian textures and the frames' data at output resolution,
+    restricted to the render views and with the background colour applied."""
+    outputs = {}
+
+    color_name = "image"
+
+    masked_gaussian_parameters = self.mask_gaussians(gaussian_parameters)
+    pred_verts = self.gaussians2mesh(gaussian_parameters) * 1000.0  # in mm
 
     images = data[color_name].to(dtype)  # (B, V, 3, H, W)
     masks = data["mask"].to(dtype)  # (B, V, 1, H, W)
@@ -955,7 +1173,14 @@ class MatchModel(nn.Module):
       gt_img_lpips = images * loss_mask
       gt_img_lpips = einops.rearrange(gt_img_lpips, "b v c h w -> (b v) c h w")
       gt_img_lpips = gt_img_lpips * 2.0 - 1.0
-      loss_lpips = lpips_loss(pred_img_lpips, gt_img_lpips)
+      if self.opt.grad_checkpoint and torch.is_grad_enabled():
+        # one image at a time, checkpointed: LPIPS scores each image on its own, and its VGG activations for
+        # backward take ~0.6 GiB per 640x512 image (7.6 GiB for 12 render views at once)
+        loss_lpips = torch.cat([
+            torch.utils.checkpoint.checkpoint(lpips_loss, pred, gt, use_reentrant=False)
+            for pred, gt in zip(pred_img_lpips.split(1), gt_img_lpips.split(1))])
+      else:
+        loss_lpips = lpips_loss(pred_img_lpips, gt_img_lpips)
       loss_lpips = einops.rearrange(
           loss_lpips, "(b v) c h w -> b v (c h w)", b=B, v=V
       )
@@ -971,6 +1196,9 @@ class MatchModel(nn.Module):
     # Metric: PSNR, SSIM and LPIPS
     if do_render:
       with torch.no_grad():
+        # PSNR over the frames with any image loss: weighting by the MSE term's weight alone left no frames (and an
+        # infinite PSNR) when MSE is off, e.g. config_0.gin's render_weight 0 with L1, SSIM and LPIPS on
+        psnr_frames = torch.stack([loss_weights_binary[k] for k in render_loss_keys]).amax(dim=0)
         loss_psnr = -10 * torch.log10(
             general_util.weight_loss(
                 (
@@ -980,7 +1208,7 @@ class MatchModel(nn.Module):
                     )
                     ** 2
                 ),
-                loss_weights_binary["render"],
+                psnr_frames,
                 drop_zero_weights=True,
             )
         )
@@ -1261,6 +1489,12 @@ class MatchModel(nn.Module):
       self.register_buffer('_masked_gaussian_geometry_loss_weights', _masked_gaussian_geometry_loss_weights, persistent=False)
     return self._masked_gaussian_geometry_loss_weights
 
+
+  def texels_in_vertex_group(self, group: str) -> torch.Tensor:
+    """(L,) bool over the masked Gaussians' texels: True where every vertex of the texel's triangle is in the
+    template's vertex group (e.g. 'fitting_region_skin', the face skin without eyes, mouth interior and ears)."""
+    in_group = self.template_vertex_group_weights[self.template_vertex_group_names.index(group)] > 0
+    return in_group[self.uv_grid_vert_ids_filtered].all(dim=1)
 
   @property
   def uv_grid_vert_ids_filtered(self) -> torch.Tensor:

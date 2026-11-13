@@ -45,7 +45,7 @@ class StaticPanel:
 
 
 class PredictionPanel(StaticPanel):
-    """MATCH prediction from the fixed novel viewpoint, with that held-out camera's real calibration."""
+    """MATCH prediction from the fixed viewpoint, with that camera's real calibration."""
 
     def __init__(self, camera_id):
         self.label = f'MATCH prediction (cam {camera_id})'
@@ -55,10 +55,13 @@ class PredictionPanel(StaticPanel):
 
 
 class RealPanel(StaticPanel):
-    """Real held-out image from the fixed viewpoint, background outside the foreground mask painted white."""
+    """Real image from the fixed viewpoint, background outside the foreground mask painted white.
 
-    def __init__(self, camera_id):
-        self.label = f'Real held-out (cam {camera_id})'
+    The label says whether the camera is held out or, in a flicker-only run, one of the model's inputs.
+    """
+
+    def __init__(self, camera_id, input_camera=False):
+        self.label = f'Real {"input" if input_camera else "held-out"} (cam {camera_id})'
 
     def image(self, ctx):
         return ctx.fixed_view.real_on_background(1.0)

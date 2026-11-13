@@ -37,3 +37,10 @@ def fail_instead_of_hanging():
     yield
     signal.alarm(0)
     signal.signal(signal.SIGALRM, previous)
+
+
+@pytest.fixture(scope='module')
+def tiny_frames():
+    """Three consecutive synthetic frames for the tiny CPU model of tiny_match.py (needs assets/)."""
+    from tiny_match import synthetic_frames
+    return synthetic_frames(3)

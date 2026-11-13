@@ -246,3 +246,40 @@ def test_shipped_calibrated_config_frames_tempeh_input_at_avas_head_scale(monkey
 
     head_px = 480 * spec['height'] / 1024
     assert 105 <= head_px <= 135
+
+
+# --- Ava-256 split: a spec may set `training`, e.g. to exclude the held-out subjects ---
+
+def ava_root_with_a_training_and_a_heldout_subject(tmp_path):
+    """An Ava-256 root holding TCE049 (held out, in assets/ava256/validation_ids.json) and the same capture
+    filed under AAN112, a training subject from assets/ava256/256_ids.csv."""
+    decoder = REPO_ROOT / 'data' / 'ava-256' / '20230807--0839--TCE049' / 'decoder'
+    for name in ['20230807--0839--TCE049', '20230405--1635--AAN112']:
+        (tmp_path / name).mkdir()
+        (tmp_path / name / 'decoder').symlink_to(decoder)
+    return tmp_path
+
+
+def ava_spec(root, **overrides):
+    spec = dict(type='ava256', root_path=str(root), camera_angles=ast.literal_eval(AVA_ANGLES),
+                height=256, width=167, frame_stride=10)
+    spec.update(overrides)
+    return spec
+
+
+@requires_ava
+def test_ava256_spec_with_training_set_keeps_only_training_subjects(tmp_path):
+    root = ava_root_with_a_training_and_a_heldout_subject(tmp_path)
+
+    (dataset,) = dataset_registry.build_datasets([ava_spec(root, training=True)])
+
+    assert [c.sid for c in dataset.captures] == ['AAN112']
+
+
+@requires_ava
+def test_ava256_spec_without_training_keeps_every_subject(tmp_path):
+    root = ava_root_with_a_training_and_a_heldout_subject(tmp_path)
+
+    (dataset,) = dataset_registry.build_datasets([ava_spec(root)])
+
+    assert sorted(c.sid for c in dataset.captures) == ['AAN112', 'TCE049']
