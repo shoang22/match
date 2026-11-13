@@ -42,13 +42,26 @@ def masked_psnr(pred: torch.Tensor, real: torch.Tensor, mask: torch.Tensor) -> f
 
     Returns math.inf when pred and real are identical inside the mask (no cap).
     """
-    pred, real, mask = _prepare(pred, real, mask)
-    m = mask.expand_as(pred)
-    mse = ((pred[m] - real[m]) ** 2).mean().item()
+    mse = masked_l2(pred, real, mask)
     if mse == 0:
         return math.inf
     return -10.0 * math.log10(mse)
 
+
+
+def masked_l1(pred: torch.Tensor, real: torch.Tensor, mask: torch.Tensor) -> float:
+    """Mean absolute error over the foreground pixels (all channels), for images in [0, 1]."""
+    pred, real, mask = _prepare(pred, real, mask)
+    m = mask.expand_as(pred)
+    return (pred[m] - real[m]).abs().mean().item()
+
+
+def masked_l2(pred: torch.Tensor, real: torch.Tensor, mask: torch.Tensor) -> float:
+    """Mean squared error over the foreground pixels (all channels), for images in [0, 1]; masked_psnr is
+    -10 log10 of it."""
+    pred, real, mask = _prepare(pred, real, mask)
+    m = mask.expand_as(pred)
+    return ((pred[m] - real[m]) ** 2).mean().item()
 
 def _fill_background(pred, real, mask, background: float):
     """Paint the same colour over the background of both images."""

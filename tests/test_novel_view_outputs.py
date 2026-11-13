@@ -11,6 +11,7 @@ Runs checked (each test skips until its runs have been done; commands in configs
   frame of the segment at every held-out camera, the reference for "scores as before".
 """
 import json
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,7 +23,12 @@ from eval_sequence_runs import FULL, TOLERANCE, load_metrics as load_sequence_me
 from tce049 import HELDOUT_CAMERAS, INPUT_CAMERA_IDS, REPO_ROOT, SEGMENT, SEGMENT_FRAMES
 
 SECTIONS = ['model', 'protocol', 'inference', 'summary', 'samples']
-SCORES = ['psnr', 'ssim', 'lpips']
+IMAGE_SCORES = ['psnr', 'ssim', 'lpips']  # the sequence evaluation's image metrics
+ERROR_SCORES = ['l1', 'l2']  # masked mean absolute and squared error
+SCORES = IMAGE_SCORES + ERROR_SCORES
+# Temporal MATCH at initialization vs per-frame MATCH, relative: TOLERANCE['psnr'] = 0.025 dB is a 0.58% change of the
+# squared error, and the absolute error moves less than that.
+RELATIVE_TOLERANCE = {'l1': 0.006, 'l2': 0.006}
 CLIP_LENGTH = 4
 
 
@@ -61,6 +67,9 @@ def load(run: BenchmarkRun):
     missing = [s for s in SECTIONS if s not in metrics]
     if missing:
         pytest.skip(f'{path} predates the sections {missing}')
+    missing = [s for s in SCORES if s not in metrics['summary']]
+    if missing:
+        pytest.skip(f'{path} predates the scores {missing}')
     return metrics
 
 
@@ -81,6 +90,13 @@ def test_the_output_reports_the_inference_mode_alongside_the_scores(run):
     assert summary['n_samples'] == len(metrics['samples']) == run.n_samples
     for name in SCORES:
         assert summary[name] == pytest.approx(sum(s[name] for s in metrics['samples']) / run.n_samples)
+
+
+@by_name
+def test_l2_is_the_squared_error_that_psnr_reports_in_db_and_l1_lies_below_its_root(run):
+    for s in load(run)['samples']:
+        assert s['psnr'] == pytest.approx(-10 * math.log10(s['l2']), abs=1e-4), s['frame']
+        assert 0 < s['l1'] <= math.sqrt(s['l2']), s['frame']  # mean |e| <= sqrt(mean e^2)
 
 
 @by_name
@@ -119,8 +135,10 @@ def test_temporal_match_at_initialization_scores_the_same_as_per_frame_match(per
     reference, windowed = load(per_frame), load(temporal)
 
     for a, b in zip(reference['samples'], windowed['samples']):
-        for name in SCORES:
+        for name in IMAGE_SCORES:
             assert b[name] == pytest.approx(a[name], abs=TOLERANCE[name]), (a['frame'], a['target_camera'], name)
+        for name in ERROR_SCORES:
+            assert b[name] == pytest.approx(a[name], rel=RELATIVE_TOLERANCE[name]), (a['frame'], a['target_camera'], name)
 
 
 @pytest.mark.parametrize('run', [PER_FRAME, FULL_PER_FRAME], ids=lambda r: r.name)
@@ -130,5 +148,5 @@ def test_a_per_frame_checkpoint_scores_as_the_sequence_evaluation_scores_that_fr
 
     for s in benchmark['samples']:
         reference = sequence[s['frame']][s['target_camera']]
-        for name in SCORES:
+        for name in IMAGE_SCORES:
             assert s[name] == pytest.approx(reference[name], abs=TOLERANCE[name]), (s['frame'], s['target_camera'], name)
