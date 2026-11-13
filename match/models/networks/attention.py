@@ -281,6 +281,18 @@ class CorrespondenceAwareAttention(nn.Module):
     return uv_tokens, img_tokens
 
 
+# The temporal sublayers run at most this many token positions (sequences of T frames) of a clip at a time.
+# Every position is its own sequence, so the chunking changes nothing in the result. It bounds the memory of
+# one attention call and its backward: the 61,440 image-token positions of a 12-view frame (the image-token
+# ablation) as one call needed ~19 GiB in backward and failed in the kernel. 4096 = the UV-token positions of
+# the pretrained model, which therefore stay one chunk.
+TEMPORAL_CHUNK_POSITIONS = 4096
+
+
+def _position_chunks(n: int):
+  return [slice(s, s + TEMPORAL_CHUNK_POSITIONS) for s in range(0, n, TEMPORAL_CHUNK_POSITIONS)]
+
+
 class TemporalAttention(nn.Module):
   """Temporal attention sublayer of divided space-time attention (TimeSformer).
 
@@ -315,8 +327,13 @@ class TemporalAttention(nn.Module):
     h = einops.rearrange(self.norm(x), "(b t) n d -> b t n d", t=clip_len)
     h = h + frame_embedding[:, None].to(h)
     b, _, n, _ = h.shape
-    h = self.attn(einops.rearrange(h, "b t n d -> (b n) t d"))
-    return einops.rearrange(h, "(b n) t d -> (b t) n d", b=b, n=n)
+    return torch.cat([
+        einops.rearrange(
+            self.attn(einops.rearrange(h[:, :, chunk], "b t n d -> (b n) t d")),
+            "(b n) t d -> (b t) n d", b=b,
+        )
+        for chunk in _position_chunks(n)
+    ], dim=1)
 
 
 def is_temporal_parameter(name: str) -> bool:
@@ -646,7 +663,8 @@ def _checkpoint_clip_block(block: nn.Module, block_inputs: dict, context: Option
   """Runs one block on clip tokens (T folded into the batch) with gradient checkpointing, frame by frame.
 
   The temporal sublayers (UV tokens, and image tokens in the ablation) need every frame of a clip, so each
-  is checkpointed on the whole batch. Everything after them (the spatial attention and MLP) treats each
+  is checkpointed on the whole batch, one chunk of token positions at a time (TEMPORAL_CHUNK_POSITIONS): the
+  backward pass then recomputes one chunk's attention at a time. Everything after them (the spatial attention and MLP) treats each
   sample on its own, so it is checkpointed one sample at a time: the backward pass then recomputes one
   frame's spatial activations at a time instead of the whole clip's. The result is what the block computes
   on the whole batch.
@@ -655,10 +673,14 @@ def _checkpoint_clip_block(block: nn.Module, block_inputs: dict, context: Option
   clip_len, frame_embedding = inputs.pop("clip_len"), inputs.pop("frame_embedding")
   for key, temporal_attn in (("uv_tokens", block.temporal_uv), ("img_tokens", block.temporal_img)):
     if temporal_attn is not None:
-      inputs[key] = torch.utils.checkpoint.checkpoint(
-          _add_temporal_residual, temporal_attn, inputs[key], clip_len, frame_embedding,
-          use_reentrant=False,
-      )
+      tokens = inputs[key]
+      inputs[key] = torch.cat([
+          torch.utils.checkpoint.checkpoint(
+              _add_temporal_residual, temporal_attn, tokens[:, chunk], clip_len, frame_embedding,
+              use_reentrant=False,
+          )
+          for chunk in _position_chunks(tokens.shape[1])
+      ], dim=1)
   n_samples = inputs["uv_tokens"].shape[0]
   outputs = [
       torch.utils.checkpoint.checkpoint(

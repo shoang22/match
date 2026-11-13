@@ -124,6 +124,21 @@ def test_gradient_checkpointing_keeps_the_image_token_sublayers_forward_and_grad
     torch.testing.assert_close(grads_ckpt[n], g, atol=1e-6, rtol=1e-4, msg=n)
 
 
+@pytest.mark.parametrize('grad_checkpoint', [False, True])
+def test_running_the_temporal_sublayers_in_chunks_of_token_positions_changes_nothing(
+    frames, grad_checkpoint, monkeypatch):
+  # The full-size image-token sublayer has 61,440 token positions per frame; it runs a bounded number of
+  # them at a time. Here 24 image and 16 UV positions per frame, so chunks of 5 split both.
+  from match.models.networks import attention
+  value, grads = clip_grads(frames, grad_checkpoint)
+  monkeypatch.setattr(attention, 'TEMPORAL_CHUNK_POSITIONS', 5)
+  value_chunked, grads_chunked = clip_grads(frames, grad_checkpoint)
+
+  torch.testing.assert_close(value_chunked, value, atol=1e-6, rtol=1e-5)
+  for n, g in grads.items():
+    torch.testing.assert_close(grads_chunked[n], g, atol=1e-6, rtol=1e-4, msg=n)
+
+
 def test_a_per_frame_checkpoint_loads_into_the_ablation_with_fresh_image_token_sublayers(tmp_path):
   from test_temporal_match_model import load_pretrained, save_checkpoint
   per_frame = build(seed=1, temporal=False)
