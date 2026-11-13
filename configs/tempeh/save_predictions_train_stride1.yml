@@ -1,0 +1,50 @@
+# PYTHONPATH=$(pwd) PYOPENGL_PLATFORM=egl conda run -n match --no-capture-output python condor/run.py configs/tempeh/save_predictions_train_stride1.yml
+# On the cluster, njobs jobs split the captures between them: condor/submit.py configs/tempeh/save_predictions_train_stride1.yml
+#
+# TEMPEH coarse meshes and UV maps for every frame of every Ava-256 training subject (#34): the inputs temporal
+# MATCH training needs for any clip it can sample.
+# - Subjects: every capture under data_dir except the held-out subjects. `'training': True` applies the same split
+#   as MATCH training (ava_train in train_match.gin): it drops the 12 subjects of assets/ava256/validation_ids.json,
+#   TCE049 among them.
+# - Frame stride 1: every frame of every segment, so clips at stride 1 or 2 always find their predictions. The
+#   stride runs over the capture's whole frame list, not within each segment, so at stride 2 a segment following
+#   one with an odd frame count would start on a skipped frame, and stride-2 clips starting there would lack
+#   inputs. Ava-256 frames are already 12 frame IDs (2/15 s) apart.
+# - Cameras and sizes as save_predictions_quickstart.yml. No segment filter, no capture or sample cap.
+# Output: ${out_dir}/ava-256/<subject>/<segment>/<frame>/{verts.npy, uv_cam<ID>.png x 12, vis.jpg}. Point MATCH's
+# uv_directory and coarse_mesh_directory at ${out_dir}/ava-256. Frames whose outputs exist are skipped on rerun.
+# Needs, per training subject: camera_calibration, frame_list, head_pose, image and foreground_masks
+# (configs/data/download_ava256_full.gin). With no training subject under data_dir the run fails on an empty dataset.
+
+
+name: save_predictions-train_stride1
+data_dir: data/ava-256
+out_dir: data/tempeh_predictions/ava-256/train_stride1
+script: scripts/tempeh/save_predictions.py
+tempeh_config: assets/pretrained_models/tempeh/config.json
+arguments: "--config-filename ${tempeh_config} \
+            --datasets \"[{'type': 'ava256', 'root_path': '${data_dir}', 'training': True, \
+                           'camera_angles': [[0,0], [0, -15], [20,0], [20, 36], [20, -15], [-20,0], [-20, 36], [-20, -15], [40,-5], [40, 25], [-40,-5], [-40, 25]], \
+                           'height': 256, 'width': 167, 'frame_stride': 1}]\" \
+            --outpath ${out_dir} \
+            --uv-out-height 786 \
+            --uv-out-width 512 \
+            --uv-n-samples -1"  # Number of samples to predict for (-1 = all)
+
+
+# condor configs
+CondorParameters:
+  name: ${name}
+  batch_name: ${name}
+  cmd: 'python ${script} ${arguments}'
+  requirements: '(TARGET.CUDACapability >= 8.0)'
+  base_dir: ${out_dir}
+  request_gpus: 1
+  request_cpus: 16
+  request_memory: 64_000
+  request_disk: 50G
+  backup_root: null
+  backup_excludepatterns: ['third_party']
+  environment: {'CC': 'gcc-11', 'CXX':'g++-11'}
+  njobs: 20
+  retries: 0
