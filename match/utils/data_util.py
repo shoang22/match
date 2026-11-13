@@ -254,6 +254,11 @@ def rotate_image(image, camera=None):
 
   return image, camera
 
+def unfold_clip(tensors: Dict[str, torch.Tensor], clip_len: int) -> Dict[str, torch.Tensor]:
+  """Inverse of `MatchBatch.fold_clip` for outputs: (B * T, ...) -> (B, T, ...) for every value."""
+  return {k: v.reshape(-1, clip_len, *v.shape[1:]) for k, v in tensors.items()}
+
+
 class Batch(Dict):
   def squeeze(self):
     '''    
@@ -355,6 +360,36 @@ class MatchBatch(Batch):
   @property
   def device(self):
      return self['image'].device
+
+  @property
+  def is_clip(self):
+    """A clip batch has a time axis after the batch axis: image (B, T, V, 3, H, W)."""
+    return len(self['image'].shape) == 6
+
+  def fold_clip(self) -> tuple['MatchBatch', int]:
+    """Folds a clip batch's time axis into its batch axis, so that every frame is its own sample.
+
+    Frame t of clip b becomes sample b * T + t. Tensors shaped (B, T, ...) are reshaped to (B * T, ...).
+    Other tensors with a leading batch axis, and lists of length B, hold one value per clip and are
+    repeated for every frame; a list of length B whose items are length-T sequences is flattened.
+
+    Returns:
+      the folded batch and the clip length T.
+    """
+    b, t = self['image'].shape[:2]
+    folded = self.__class__()
+    for k, v in self.items():
+      if isinstance(v, torch.Tensor) and v.ndim >= 2 and v.shape[:2] == (b, t):
+        v = v.reshape(b * t, *v.shape[2:])
+      elif isinstance(v, torch.Tensor) and v.ndim >= 1 and v.shape[0] == b:
+        v = v.repeat_interleave(t, dim=0)
+      elif isinstance(v, (list, tuple)) and len(v) == b:
+        if all(isinstance(x, (list, tuple)) and len(x) == t for x in v):
+          v = [x for clip in v for x in clip]
+        else:
+          v = [x for x in v for _ in range(t)]
+      folded[k] = v
+    return folded, t
 
   def resize(self, resolution: int|tuple[int, int]):
     """returns copy of batch with images and intrinsics resized to the desired resolution.

@@ -475,21 +475,38 @@ class MatchModel(nn.Module):
   ):
     """Args:
 
-      data: A dictionary of data.
+      data: A dictionary of data: a batch of frames (image (B, V, 3, H, W)) or a batch of clips with a
+        time axis after the batch axis (image (B, T, V, 3, H, W); see `MatchBatch.fold_clip`).
       dtype: The data type to use.
 
     returns:
-      dict with keys:
+      dict with keys (a clip batch gets a time axis after the batch axis, (B, T, 1, C, H, W)):
       - xyz: (B, 1, 3, H, W)
       - rgb: (B, 1, 3, H, W)
-      - scale: (B, 1, 1, H, W)
-      - rotation: (B, 1, 3, H, W)
+      - scale: (B, 1, 3, H, W)
+      - rotation: (B, 1, 4, H, W)
       - opacity: (B, 1, 1, H, W)
       - uv: (B, 1, 3, H, W)
+      and, with return_masked_gaussians, the masked Gaussians ((B, (T,) 1, C, L, 1)).
     """
-    b, v, _, h, w = data["uv"].shape
     data = data_util.MatchBatch(data)
-    
+    if not data.is_clip:
+      gaussian_features = self._forward_frame_gaussians(data, dtype, clip_len=1)
+      if return_masked_gaussians:
+        return gaussian_features, self.mask_gaussians(gaussian_features)
+      return gaussian_features
+
+    frames, clip_len = data.fold_clip()
+    gaussian_features = self._forward_frame_gaussians(frames, dtype, clip_len=clip_len)
+    clip_gaussian_features = data_util.unfold_clip(gaussian_features, clip_len)
+    if return_masked_gaussians:
+      return clip_gaussian_features, data_util.unfold_clip(self.mask_gaussians(gaussian_features), clip_len)
+    return clip_gaussian_features
+
+  def _forward_frame_gaussians(self, data: data_util.MatchBatch, dtype: torch.dtype, clip_len: int):
+    """Gaussian textures (B * T, 1, C, H, W) for a batch of frames in which every `clip_len` consecutive
+    samples are the frames of one clip."""
+    b, v, _, h, w = data["uv"].shape
     if self.opt.num_input_views is not None:
       device = data['uv'].device
       if not self.training:
@@ -531,13 +548,7 @@ class MatchModel(nn.Module):
         nviews=v,
     )
     x_uv = self.ln_out(x_uv)
-    gaussian_features = self._uv_tokens_to_gaussian_feature_textures(x_uv, uv_xyz=uv_xyz, uv_rgb=uv_rgb)
-
-
-    if return_masked_gaussians:
-      return gaussian_features, self.mask_gaussians(gaussian_features)
-    else:
-      return gaussian_features
+    return self._uv_tokens_to_gaussian_feature_textures(x_uv, uv_xyz=uv_xyz, uv_rgb=uv_rgb)
 
   def forward(self, *args, func_name="compute_loss", **kwargs):
     # To support different forward functions for models wrapped by `accelerate`
