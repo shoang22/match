@@ -234,10 +234,11 @@ class MatchRunner:
         self.lpips_loss.is_floating_point = types.MethodType(is_floating_point, self.lpips_loss)
 
     def init_optimizer(self):
-        params_to_optimize = filter(lambda p: p.requires_grad, self.model.parameters())
-        optimizer = models.get_optimizer(params=params_to_optimize, **self.opt.optimizer)
+        param_groups = match_model.optimizer_param_groups(self.model, self.opt)
+        optimizer = models.get_optimizer(params=param_groups, **self.opt.optimizer)
         self.optimizer = optimizer
-        self.params_to_optimize = list(params_to_optimize)
+        # a list, not the iterator the optimizer consumed: train_step clips the gradient norm over these
+        self.params_to_optimize = [p for group in param_groups for p in group['params']]
         return optimizer
 
     def init_scheduler(self):

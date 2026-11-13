@@ -114,6 +114,10 @@ class Options:
   clip_length: int = 4
   # With `temporal`, only the temporal parameters train; everything else has gradients disabled.
   temporal_freeze_spatial: bool = True
+  # Learning rate of the spatial (non-temporal) weights when they train (temporal_freeze_spatial = False):
+  # they become a second optimizer group, the temporal parameters keep optimizer['lr']. None: one group at
+  # optimizer['lr']. Must stay None while the spatial weights are frozen or without `temporal`.
+  temporal_spatial_lr: float | None = None
 
   ## Rendering
   render_type: Literal[

@@ -61,3 +61,56 @@ def test_the_loss_on_a_clip_is_the_sum_of_per_frame_matchs_losses_on_its_frames(
   expected = sum(loss(per_frame, to(as_batch(frame), device)) for frame in frames)
 
   torch.testing.assert_close(loss(temporal, to(as_clip(frames), device)), expected, atol=1e-5, rtol=1e-5)
+
+
+def optimizer_of(model):
+  """MatchRunner.init_optimizer on `model`, without the rest of the runner (display, accelerator, data)."""
+  from match.runner import MatchRunner
+  runner = MatchRunner.__new__(MatchRunner)
+  runner.model, runner.opt = model, model.opt
+  runner.init_optimizer()
+  return runner
+
+
+def names_of(model, params) -> set[str]:
+  name_by_id = {id(p): n for n, p in model.named_parameters()}
+  return {name_by_id[id(p)] for p in params}
+
+
+def temporal_names(model) -> set[str]:
+  per_frame_names = set(build(temporal=False).state_dict())
+  return {n for n, _ in model.named_parameters()} - per_frame_names
+
+
+def test_by_default_the_optimizer_holds_only_the_temporal_parameters_and_clips_their_gradients():
+  model = build(temporal=True, clip_length=3)
+  runner = optimizer_of(model)
+
+  groups = runner.optimizer.param_groups
+  assert len(groups) == 1
+  assert names_of(model, groups[0]['params']) == temporal_names(model)
+  assert groups[0]['lr'] == model.opt.optimizer['lr']
+  # the parameters MatchRunner.train_step clips the gradient norm of
+  assert names_of(model, runner.params_to_optimize) == temporal_names(model)
+
+
+def test_the_spatial_weights_can_train_as_a_second_group_with_their_own_learning_rate():
+  model = build(temporal=True, clip_length=3, temporal_freeze_spatial=False, temporal_spatial_lr=1e-6)
+  runner = optimizer_of(model)
+
+  temporal_group, spatial_group = runner.optimizer.param_groups
+  everything = {n for n, _ in model.named_parameters()}
+  assert names_of(model, temporal_group['params']) == temporal_names(model)
+  assert names_of(model, spatial_group['params']) == everything - temporal_names(model)
+  assert temporal_group['lr'] == model.opt.optimizer['lr']
+  assert spatial_group['lr'] == 1e-6
+  assert names_of(model, runner.params_to_optimize) == everything
+
+
+@pytest.mark.parametrize('options', [
+    dict(temporal=True, temporal_spatial_lr=1e-6),  # spatial weights frozen (the default)
+    dict(temporal=False, temporal_spatial_lr=1e-6),  # no temporal parameters to set apart
+], ids=['frozen', 'per-frame'])
+def test_a_spatial_learning_rate_that_would_do_nothing_is_refused(options):
+  with pytest.raises(ValueError, match='temporal_spatial_lr'):
+    build(**options)

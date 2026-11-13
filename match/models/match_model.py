@@ -27,6 +27,23 @@ def checkpoint_allow_missing(opt: Options):
   return is_temporal_parameter if opt.temporal else None
 
 
+def optimizer_param_groups(model: nn.Module, opt: Options) -> list[dict]:
+  """The trainable parameters of `model` as optimizer parameter groups.
+
+  The temporal parameters (if any) form the first group, at the optimizer's learning rate. The other
+  trainable parameters form a second group, at `opt.temporal_spatial_lr` if set. Frozen parameters
+  (requires_grad False) are left out. Empty groups are dropped.
+  """
+  temporal, spatial = [], []
+  for name, param in model.named_parameters():
+    if param.requires_grad:
+      (temporal if is_temporal_parameter(name) else spatial).append(param)
+  spatial_group = {'params': spatial}
+  if opt.temporal_spatial_lr is not None:
+    spatial_group['lr'] = opt.temporal_spatial_lr
+  return [g for g in ({'params': temporal}, spatial_group) if g['params']]
+
+
 class MatchModel(nn.Module):
 
   def __init__(self, opt: Options):
@@ -144,6 +161,10 @@ class MatchModel(nn.Module):
         ava2flame_mapping[k] = torch.from_numpy(v)
     self.ava2flame_mapping = ava2flame_mapping
 
+    if opt.temporal_spatial_lr is not None and not (opt.temporal and not opt.temporal_freeze_spatial):
+      raise ValueError(
+          'temporal_spatial_lr is the learning rate of trainable spatial weights next to the temporal ones; it'
+          ' needs temporal = True and temporal_freeze_spatial = False')
     if opt.temporal and opt.temporal_freeze_spatial:
       for name, param in self.named_parameters():
         param.requires_grad_(is_temporal_parameter(name))
