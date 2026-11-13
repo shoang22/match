@@ -7,6 +7,7 @@ keyed by source frame ID and held-out camera, per-frame metric plots, and copies
 Configs and run command: configs/match/eval_sequence_*.gin.
 
 Extension points (one place each):
+- how each frame's Gaussian texture is predicted: `build_predictor` (predictors in match/sequence_eval/predictors.py)
 - grid panels: `build_panels` (panel classes in match/sequence_eval/panels.py)
 - metrics: `build_metric_collectors` (collectors in match/sequence_eval/metrics.py)
 - outputs: `write_outputs` (helpers in match/sequence_eval/outputs.py)
@@ -29,6 +30,7 @@ from match.sequence_eval import metrics as seq_metrics
 from match.sequence_eval import outputs as seq_outputs
 from match.sequence_eval import panels as seq_panels
 from match.sequence_eval import plots as seq_plots
+from match.sequence_eval import predictors as seq_predictors
 from match.sequence_eval.context import SequencePlan, build_frame_context
 from match.sequence_eval.frames import (FrameLoadError, SequenceFrames, check_heldout_cameras, closest_to_frontal,
                                         frame_ids, single_capture)
@@ -62,34 +64,64 @@ def load_sequence(opt, heldout_camera_ids):
     return SequenceFrames(capture, heldout_camera_ids)
 
 
-def run_frames(runner, plan, panels, collectors, video, preview):
-    """Forward pass per source frame, then metrics and grid frames for it. Returns the input camera IDs per frame.
+def build_predictor(runner) -> seq_predictors.FramePredictor:
+    """How each frame's Gaussian texture is predicted: one forward pass per frame."""
+    model = runner.get_unwrapped_model()
+    return seq_predictors.PerFramePredictor(
+        forward=lambda batch: model.mask_gaussians(runner.model(batch, func_name='forward_gaussians')))
 
-    The preview gets the first grid frame of every source frame, so it shows each source frame exactly once.
-    """
-    sequence = plan.sequence
+
+def load_batches(runner, sequence):
+    """Yields the batch (B=1, on the runner's device) of every frame of the sequence, in order."""
     num_workers = runner.opt.val_loader_params[0]['kwargs']['dataloader_kwargs'].get('num_workers', 0)
     loader = torch.utils.data.DataLoader(sequence, batch_size=1, shuffle=False, num_workers=num_workers)
-    model = runner.get_unwrapped_model()
+    for i, sample in enumerate(loader):
+        batch = data_util.MatchBatch(sample)
+        batch.to_device(runner.device)
+        frame = batch['frame'][0]
+        if frame != sequence.frame_ids[i]:
+            raise FrameLoadError(f'Expected frame {sequence.frame_ids[i]} at position {i}, got {frame}')
+        yield batch
+
+
+def predicted_in_order(frames, frame_ids):
+    """Passes the predictor's frames through, raising FrameLoadError unless they are exactly the sequence, in order."""
+    n = 0
+    for frame in frames:
+        emitted = frame.batch['frame'][0]
+        if n == len(frame_ids) or frame.frame_index != n or emitted != frame_ids[n]:
+            expected = f'frame {frame_ids[n]} at position {n}' if n < len(frame_ids) else 'no more frames'
+            raise FrameLoadError(f'The predictor emitted frame {emitted} at position {frame.frame_index}, '
+                                 f'expected {expected}')
+        yield frame
+        n += 1
+    if n != len(frame_ids):
+        raise FrameLoadError(f'The predictor stopped after {n} of {len(frame_ids)} frames')
+
+
+def run_frames(runner, plan, predictor, panels, collectors, video, preview):
+    """Metrics and grid frames for every frame the predictor emits, in frame order. Returns the input camera IDs per frame.
+
+    The predictor reads the frames' batches and may read several before it emits one. The preview gets the
+    first grid frame of every source frame, so it shows each source frame exactly once.
+    """
+    sequence = plan.sequence
     input_cameras = {}
     with torch.autocast('cuda', dtype=torch.float16), torch.no_grad():
-        for i, sample in enumerate(tqdm.tqdm(loader, desc='Frames')):
-            batch = data_util.MatchBatch(sample)
-            batch.to_device(runner.device)
-            frame = batch['frame'][0]
-            if frame != sequence.frame_ids[i]:
-                raise FrameLoadError(f'Expected frame {sequence.frame_ids[i]} at position {i}, got {frame}')
-            input_cameras[frame] = [str(c) for c in batch['camera'][0].tolist()]
+        frames = predicted_in_order(predictor.predict(load_batches(runner, sequence)), sequence.frame_ids)
+        for predicted in tqdm.tqdm(frames, desc='Frames', total=len(sequence)):
+            predicted = predicted.to(runner.device)
+            i, batch = predicted.frame_index, predicted.batch
+            input_cameras[batch['frame'][0]] = [str(c) for c in batch['camera'][0].tolist()]
 
-            gaussians = model.mask_gaussians(runner.model(batch, func_name='forward_gaussians'))
-            ctx = build_frame_context(runner, batch, gaussians, plan, frame_index=i)
+            ctx = build_frame_context(runner, batch, predicted.gaussians, plan, frame_index=i)
             for collector in collectors:
                 collector.add_frame(ctx)
             for k, grid in seq_panels.render_grid_frames(panels, ctx):
                 video.write(k, grid)
                 if k == ctx.output_frame_indices[0]:
                     preview.write(i, grid)
-            del ctx, gaussians, batch
+            del ctx, predicted, batch
     return input_cameras
 
 
@@ -128,7 +160,8 @@ def eval_sequence(opt: Options, out_dir: str = None, heldout_camera_ids: list = 
     video = seq_outputs.GridVideoWriter(out_dir, n_frames=plan.n_output_frames, fps=fps)
     preview = seq_outputs.GridVideoWriter(out_dir, n_frames=len(sequence), fps=preview_fps,
                                           name=seq_outputs.PREVIEW_VIDEO)
-    input_cameras = run_frames(runner, plan, panels, collectors, video, preview)
+    predictor = build_predictor(runner)
+    input_cameras = run_frames(runner, plan, predictor, panels, collectors, video, preview)
 
     metrics = {
         'model': {'path': opt.load_pretrained_model, 'checkpoint': runner.pretrained_model_iter},
@@ -144,11 +177,10 @@ def eval_sequence(opt: Options, out_dir: str = None, heldout_camera_ids: list = 
         'preview': {'file': seq_outputs.PREVIEW_VIDEO, 'fps': preview_fps, 'n_frames': len(sequence),
                     'output_frames': list(sequence.frame_ids)},
     }
-    for collector in collectors:
-        sections = collector.finish()
+    for source, sections in [(predictor, predictor.metrics())] + [(c, c.finish()) for c in collectors]:
         clash = set(sections) & set(metrics)
         if clash:
-            raise KeyError(f'{type(collector).__name__} returned metrics sections that already exist: {clash}')
+            raise KeyError(f'{type(source).__name__} returned metrics sections that already exist: {clash}')
         metrics.update(sections)
     write_outputs(out_dir, video, preview, metrics)
     runner.logger.info(f'Wrote {out_dir / seq_outputs.GRID_VIDEO}, {out_dir / seq_outputs.PREVIEW_VIDEO}, '
