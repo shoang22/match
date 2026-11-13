@@ -303,3 +303,23 @@ def test_with_the_switch_off_the_model_has_exactly_the_pretrained_checkpoints_ke
 
   assert set(model.state_dict()) == set(load_file(f'{folder}/model.safetensors'))
   assert all(p.requires_grad for p in model.parameters())
+
+
+def test_folding_a_collated_clip_batch_makes_every_frame_a_sample():
+  from torch.utils.data import default_collate
+  from match.utils.data_util import MatchBatch
+
+  def clip(subject, frames):  # what a dataset in clip mode returns
+    return {'image': torch.stack([torch.full((2, 3, 4, 4), float(f)) for f in frames]),
+            'scene_scale': torch.tensor([float(f) for f in frames]),
+            'frame': [str(f) for f in frames], 'subject': subject}
+
+  batch = MatchBatch(default_collate([clip('A', [1, 2, 3]), clip('B', [7, 8, 9])]))
+  folded, clip_len = batch.fold_clip()
+
+  assert clip_len == 3
+  assert folded['image'].shape == (6, 2, 3, 4, 4)
+  assert folded['image'][:, 0, 0, 0, 0].tolist() == [1, 2, 3, 7, 8, 9]
+  assert folded['scene_scale'].tolist() == [1, 2, 3, 7, 8, 9]
+  assert folded['frame'] == ['1', '2', '3', '7', '8', '9']
+  assert folded['subject'] == ['A', 'A', 'A', 'B', 'B', 'B']
