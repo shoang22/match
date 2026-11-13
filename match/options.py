@@ -126,6 +126,10 @@ class Options:
   # they become a second optimizer group, the temporal parameters keep optimizer['lr']. None: one group at
   # optimizer['lr']. Must stay None while the spatial weights are frozen or without `temporal`.
   temporal_spatial_lr: float | None = None
+  # Per-frame MATCH only (temporal = False): train just the offset head, the output layers that predict each
+  # texel's offset and attributes from its UV token (out_xyz, out_rgb, out_scale, out_rotation, out_opacity).
+  # Every other weight gets requires_grad False. The "per-frame MATCH on clips + temporal loss" cell (#38).
+  train_offset_head_only: bool = False
 
   ## Rendering
   render_type: Literal[

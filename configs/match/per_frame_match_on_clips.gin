@@ -1,13 +1,17 @@
 # Per-frame MATCH trained on clips (#38), included on top of a temporal MATCH training config (and its smoke test) to drop the
 # temporal attention. Not a training config on its own.
 #
-# Without temporal sublayers there is nothing new to train, so every weight of the pretrained model trains (Sapiens stays frozen).
-# The clips, losses, data and step budget are the temporal config's. The learning rate is lower: these are the pretrained weights,
-# and the pretrained run ended at ~1.9e-6 (cosine schedule at step 860k of 1M from 4e-5). 4e-6 is the spatial learning rate of the
-# temporal config's unfreezing ablation.
+# Without temporal sublayers only the offset head trains: the output layers that predict each texel's offset and attributes
+# from its UV token (out_xyz, out_rgb, out_scale, out_rotation, out_opacity; 1.8M parameters at uv_res_1024, against the
+# temporal cells' 12.6M temporal parameters). Every other spatial weight stays frozen, as in the temporal cells, so the 2x2
+# compares the temporal loss and the temporal attention on the same frozen backbone; Sapiens is never trained.
+# The clips, losses, data and step budget are the temporal config's. The learning rate is lower: the head holds pretrained
+# weights, and the pretrained run ended at ~1.9e-6 (cosine schedule at step 860k of 1M from 4e-5). 4e-6 is the spatial
+# learning rate of the temporal config's unfreezing ablation.
 
 Options:
   temporal = False
+  train_offset_head_only = True
   fine_tune = True  # start at step 0 from the pretrained weights, not from the pretrained run's optimizer and step
   temporal_spatial_lr = None
   optimizer = {

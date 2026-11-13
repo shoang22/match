@@ -54,6 +54,15 @@ def temporal_trajectory_loss(trajectories: Tensor, texel_weights: Tensor | None 
   return (squared * texel_weights).sum(dim=2).mean(dim=1) / texel_weights.sum()
 
 
+# The output layers that predict each texel's offset and attributes from its UV token.
+OFFSET_HEAD_LAYERS = ('out_xyz', 'out_rgb', 'out_scale', 'out_rotation', 'out_opacity')
+
+
+def is_offset_head_parameter(name: str) -> bool:
+  """True for parameters (state-dict keys) of the offset head, `OFFSET_HEAD_LAYERS`."""
+  return name.split('.')[0] in OFFSET_HEAD_LAYERS
+
+
 def optimizer_param_groups(model: nn.Module, opt: Options) -> list[dict]:
   """The trainable parameters of `model` as optimizer parameter groups.
 
@@ -198,6 +207,12 @@ class MatchModel(nn.Module):
     if opt.temporal and opt.temporal_freeze_spatial:
       for name, param in self.named_parameters():
         param.requires_grad_(is_temporal_parameter(name))
+    if opt.train_offset_head_only:
+      if opt.temporal:
+        raise ValueError('train_offset_head_only is for per-frame MATCH (temporal = False); temporal MATCH chooses '
+                         'what trains with temporal_freeze_spatial')
+      for name, param in self.named_parameters():
+        param.requires_grad_(is_offset_head_parameter(name))
 
     
   def to(self, *args, **kwargs):

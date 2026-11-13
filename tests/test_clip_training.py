@@ -105,6 +105,42 @@ def test_a_spatial_learning_rate_that_would_do_nothing_is_refused(options):
     build(**options)
 
 
+# The layers that predict each texel's offset and attributes from its UV token.
+OFFSET_HEAD = {'out_xyz.weight', 'out_rgb.weight', 'out_scale.weight', 'out_rotation.weight', 'out_opacity.weight'}
+
+
+def test_per_frame_match_on_clips_can_train_only_its_offset_head():
+  model = build(temporal=False, train_offset_head_only=True)
+  runner = optimizer_of(model)
+
+  trainable = {n for n, p in model.named_parameters() if p.requires_grad}
+  assert trainable == OFFSET_HEAD
+  # dim 32 to 16x16 texels per UV token of xyz (3), rgb (3), scale (3), rotation (4) and opacity (1)
+  assert sum(model.get_parameter(n).numel() for n in trainable) == 32 * 16 * 16 * 14
+  (group,) = runner.optimizer.param_groups
+  assert names_of(model, group['params']) == OFFSET_HEAD
+  assert names_of(model, runner.params_to_optimize) == OFFSET_HEAD
+
+
+def test_a_clip_loss_backpropagates_into_the_offset_head_only(tiny_frames):
+  model = build(temporal=False, train_offset_head_only=True, **GEOMETRY_LOSSES).train()
+
+  loss(model, as_clip(tiny_frames)).backward()
+
+  grads = {n: p.grad for n, p in model.named_parameters()}
+  # the geometry losses reach the position, scale and opacity layers (colour and rotation need the rasterizer)
+  geometry_heads = {'out_xyz.weight', 'out_scale.weight', 'out_opacity.weight'}
+  assert all(grads[n] is not None and grads[n].abs().max() > 0 for n in geometry_heads)
+  assert all(g is None for n, g in grads.items() if n not in OFFSET_HEAD)
+
+
+def test_training_only_the_offset_head_is_refused_for_temporal_match():
+  # temporal MATCH trains its temporal sublayers (temporal_freeze_spatial); an offset-head-only run of it would
+  # silently freeze them too
+  with pytest.raises(ValueError, match='train_offset_head_only'):
+    build(temporal=True, train_offset_head_only=True)
+
+
 class RecordingAccelerator:
   """Stands in for accelerate.Accelerator in MatchRunner.resume_checkpoint: records which states it loads."""
   is_main_process = True

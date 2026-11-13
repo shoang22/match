@@ -238,7 +238,7 @@ The option `temporal_loss_weight` (default 0, off) adds a loss on each texel's t
 
 Two configs train with it, both with `temporal_loss_weight = 1e-3` from `configs/match/temporal_loss.gin`:
 - `configs/match/train_temporal_match_temporal_loss.gin`: temporal MATCH, i.e. `configs/match/train_temporal_match.gin` plus the loss.
-- `configs/match/train_match_clips_temporal_loss.gin`: per-frame MATCH trained on clips, with no temporal sublayers. Every pretrained weight trains, at a learning rate of 4e-6 (`configs/match/per_frame_match_on_clips.gin`).
+- `configs/match/train_match_clips_temporal_loss.gin`: per-frame MATCH trained on clips, with no temporal sublayers. Only the offset head trains (`train_offset_head_only`: the output layers that predict each texel's offset and attributes, 1.8M parameters against the temporal cells' 12.6M), at a learning rate of 4e-6 (`configs/match/per_frame_match_on_clips.gin`). Every other weight stays frozen, as in the temporal cells.
 
 Each one has a `_smoketest.gin` version that runs on the data of the temporal clip-training smoke test above. The command is the same as above, with a different `--gin_configs`. Results go to `experiments/match/<NAME>`. On TCE049 the pretrained model's `temporal_xyz_loss` is 10-30 mm² per clip, so the loss adds 0.01-0.03 to a clip loss of ~0.77, and the colour term is under 1% of it. A temporal MATCH step takes ~8.4 s and peaks at 14.7 GiB allocated. A per-frame-on-clips step takes ~8.7 s and peaks at 17.4 GiB.
 

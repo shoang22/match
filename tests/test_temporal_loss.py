@@ -145,10 +145,12 @@ def test_the_temporal_loss_config_is_stage_1_temporal_match_plus_the_temporal_lo
 
 
 @needs_assets
-def test_the_per_frame_config_fine_tunes_every_weight_of_per_frame_match_on_clips_with_the_temporal_loss():
+def test_the_per_frame_config_fine_tunes_only_the_offset_head_of_per_frame_match_on_clips_with_the_temporal_loss():
   temporal, opt = options(TEMPORAL_CONFIG), options(PER_FRAME_CONFIG)
 
-  assert not opt.temporal  # no temporal attention: nothing is frozen
+  assert not opt.temporal  # no temporal attention
+  # spatial weights stay frozen as in the temporal cells, except the layers that predict the per-texel offset
+  assert opt.train_offset_head_only
   assert opt.fine_tune  # start at step 0 from the pretrained weights, not the pretrained run's state
   assert opt.temporal_loss_weight == temporal.temporal_loss_weight
   assert opt.temporal_loss_rgb_weight == temporal.temporal_loss_rgb_weight
@@ -167,8 +169,8 @@ def test_each_smoke_config_is_its_config_on_the_stage_1_smoke_setup(config, smok
   opt, smoke, stage1_smoke = options(config), options(smoke_config), options(STAGE1_SMOKE_CONFIG)
 
   for k in ('temporal', 'fine_tune', 'temporal_loss_weight', 'temporal_loss_rgb_weight', 'optimizer',
-            'temporal_freeze_spatial', 'load_pretrained_model', 'grad_checkpoint', 'num_input_views',
-            'num_render_views'):
+            'temporal_freeze_spatial', 'train_offset_head_only', 'load_pretrained_model', 'grad_checkpoint',
+            'num_input_views', 'num_render_views'):
     assert getattr(smoke, k) == getattr(opt, k), k
   for k in ('train_loader_params', 'val_loader_params', 'max_train_steps', 'lr_scheduler', 'xyz_weight',
             'mesh_vert_weight'):
