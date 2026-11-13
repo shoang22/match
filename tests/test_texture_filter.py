@@ -1,14 +1,23 @@
 """Temporal texture filter baseline: CPU tests on synthetic Gaussian textures, no model.
 
+The textures go through the filter as the sequence evaluation runs it, TextureFilterPredictor over per-frame
+textures (match/sequence_eval/predictors.py), which applies texture_filter.kernel and blend.
 Run: CUDA_VISIBLE_DEVICES= conda run -n match python -m pytest -q tests/test_texture_filter.py
 """
 import math
 
 import torch
 
-from match.sequence_eval.texture_filter import filter_textures
+from match.sequence_eval.predictors import PerFramePredictor, TextureFilterPredictor
 
 L = 5  # texels
+
+
+def filter_textures(textures: list[dict], sigma: float) -> list[dict]:
+    """Each frame's texture after the texture filter, from the textures of a whole sequence."""
+    per_frame = PerFramePredictor(forward=lambda batch: textures[batch['index']])
+    batches = [{'frame': [str(i)], 'index': i} for i in range(len(textures))]
+    return [frame.gaussians for frame in TextureFilterPredictor(per_frame, sigma).predict(batches)]
 
 
 def texture(xyz=0.0, rgb=0.5, scale=0.01, opacity=0.8, rotation=(1.0, 0.0, 0.0, 0.0)):
