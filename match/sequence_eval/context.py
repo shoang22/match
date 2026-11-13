@@ -102,7 +102,7 @@ class FrameContext:
         return out['image'][0].float().clamp(0, 1)
 
 
-def _render_views(runner, gaussians, C2W, fxfycxcy, real, mask, camera_ids):
+def render_views(runner, gaussians, C2W, fxfycxcy, real, mask, camera_ids):
     """Renders the Gaussians from each camera (V,4,4), (V,4) at the real images' size: one HeldOutView per camera."""
     H, W = real.shape[-2:]
     pred = runner.render_gaussians(gaussians, C2W[None], fxfycxcy[None], height=H, width=W,
@@ -116,13 +116,13 @@ def build_frame_context(runner, batch, gaussians, plan: SequencePlan, frame_inde
     calibration and bundles the frame's data."""
     heldout, input_view = {}, None
     if plan.heldout_camera_ids:
-        heldout = _render_views(runner, gaussians, batch['extra_C2W'][0], batch['extra_fxfycxcy'][0],
+        heldout = render_views(runner, gaussians, batch['extra_C2W'][0], batch['extra_fxfycxcy'][0],
                                 batch['extra_image'][0].float(), batch['extra_mask'][0].float(),
                                 plan.heldout_camera_ids)
     if plan.fixed_view_is_input:
         v = [str(c) for c in batch['camera'][0].tolist()].index(plan.fixed_view_camera)
         views = slice(v, v + 1)
-        (input_view,) = _render_views(runner, gaussians, batch['C2W'][0][views], batch['fxfycxcy'][0][views],
+        (input_view,) = render_views(runner, gaussians, batch['C2W'][0][views], batch['fxfycxcy'][0][views],
                                       batch['image'][0][views].float(), batch['mask'][0][views].float(),
                                       [plan.fixed_view_camera]).values()
     return FrameContext(
