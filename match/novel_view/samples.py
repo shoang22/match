@@ -54,6 +54,7 @@ class SamplePlan:
     n_eligible: int  # frames that could be test frames
     n_without_inputs: int  # frames without complete inputs (e.g. no TEMPEH prediction)
     n_in_short_runs: int  # frames with complete inputs in runs shorter than the context window
+    context_length: int  # the sliding window whose inputs the target camera avoids; the longest benchmarked clip
 
 
 def complete_runs(frames: list[FrameInputs]) -> list[list[FrameInputs]]:
@@ -110,4 +111,5 @@ def plan_samples(captures: dict[str, list[FrameInputs]], target_cameras: Callabl
             subject=subject, sequence=frame.sequence, frame=frame.frame,
             target_camera=candidates[int(rng.integers(len(candidates)))],
             run=tuple(f.frame for f in run), index=index))
-    return SamplePlan(samples, n_eligible=len(eligible), n_without_inputs=n_without, n_in_short_runs=n_short)
+    return SamplePlan(samples, n_eligible=len(eligible), n_without_inputs=n_without, n_in_short_runs=n_short,
+                      context_length=context_length)
