@@ -4,7 +4,6 @@ Imports scripts/match/eval_sequence.py, which pulls in the runner (~12 s). Rende
 and the video writers are stand-ins that record what they are given.
 Run: CUDA_VISIBLE_DEVICES= conda run -n match python -m pytest -q tests/test_eval_sequence_frame_loop.py
 """
-import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,6 +13,7 @@ import torch
 
 from match.sequence_eval.context import SequencePlan
 from match.sequence_eval.predictors import PredictedFrame
+import eval_sequence_script
 
 H, W = 8, 8
 CAMERA = '400001'
@@ -21,14 +21,7 @@ FRAMES = ['000010', '000022', '000034']
 SCHEDULE = [0, 0, 1, 2, 2, 2]  # source frame shown in each grid-video frame
 
 
-def load_script():
-    spec = importlib.util.spec_from_file_location('eval_sequence', 'scripts/match/eval_sequence.py')
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-eval_sequence = load_script()
+eval_sequence = eval_sequence_script.load()
 
 
 class Sequence(torch.utils.data.Dataset):

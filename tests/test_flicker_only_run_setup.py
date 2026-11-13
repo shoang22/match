@@ -3,7 +3,6 @@
 Imports scripts/match/eval_sequence.py, which pulls in the runner (~12 s). CPU, no model, no data.
 Run: CUDA_VISIBLE_DEVICES= conda run -n match python -m pytest -q tests/test_flicker_only_run_setup.py
 """
-import importlib.util
 from types import SimpleNamespace
 
 import pytest
@@ -11,18 +10,12 @@ import pytest
 from match.sequence_eval import metrics as seq_metrics
 from match.sequence_eval.context import SequencePlan
 from tce049 import ASSETS
+import eval_sequence_script
 
 TEMPLATE_MESH = ASSETS / 'ava256/face_topology_cleaned.obj'
 
 
-def load_script():
-    spec = importlib.util.spec_from_file_location('eval_sequence', 'scripts/match/eval_sequence.py')
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-eval_sequence = load_script()
+eval_sequence = eval_sequence_script.load()
 
 
 def plan(heldout_camera_ids, fixed_view_camera):
