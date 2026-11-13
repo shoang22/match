@@ -13,6 +13,7 @@ Each run's tests skip until it has been done (see eval_sequence_runs.py). The vi
 flicker-only runs is checked further in test_eval_sequence_smoketest.py.
 """
 import math
+import re
 
 import pytest
 from PIL import Image
@@ -205,4 +206,7 @@ def test_plots_of_every_per_frame_metric_are_written(run, metrics):
 def test_gin_configs_are_copied(run, metrics):
     # Same bindings as the committed config; its header comment may have been edited since the run.
     assert config_bindings(run.out_dir / 'config_0.gin') == config_bindings(REPO_ROOT / run.config)
-    assert f"OUT_DIR = '{run.out_dir_setting}'" in (run.out_dir / 'config_all.gin').read_text()
+    # The run wrote to the folder the tests read, however either path was spelled (relative to the repo root, or
+    # absolute, e.g. through EVAL_SEQUENCE_*_DIR or a worktree's experiments/ symlink).
+    (out_dir,) = re.findall(r"^OUT_DIR = '(.*)'$", (run.out_dir / 'config_all.gin').read_text(), flags=re.M)
+    assert (REPO_ROOT / out_dir).resolve() == run.out_dir.resolve()
