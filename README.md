@@ -211,6 +211,20 @@ Coming soon...
 
 To fit in 24GB, the config uses 4 input views and a 32x32 grid of UV patches (`uv_patch_size = 16` at `uv_res = 512`). The image-UV patch correspondence step scales with input views x UV patches x pixels, and the full 12-view setup does not fit.
 
+### Temporal MATCH clip-training smoke test
+`configs/match/train_temporal_match_smoketest.gin` runs 4 clip steps of temporal MATCH, then one validation pass and one checkpoint, to check that clip training works. It uses the default temporal training config, `configs/match/train_temporal_match.gin` (the pretrained uv_res_1024 weights, clips of 4 frames, 12 input and 12 render views, gradient checkpointing, spatial weights and Sapiens frozen), with different data. It is not a real training run.
+
+- No Ava-256 training subject is on disk, so the smoke test trains on the held-out subject TCE049: its `SEN_a_good_morrow_to_you_my_boy` segment, the only one with TEMPEH predictions at every frame. Create them first with [Evaluating pretrained MATCH on a sequence](#evaluating-pretrained-match-on-a-sequence), step 2. The default config never trains on held-out subjects.
+- Run the smoke test:
+    ```bash
+    PYOPENGL_PLATFORM=egl PYTHONPATH=$(pwd) \
+      torchrun --standalone --nnodes=1 --nproc-per-node=1 scripts/match/train_match.py \
+      --gin_configs configs/match/train_temporal_match_smoketest.gin
+    ```
+    Results are written to `experiments/match/temporal_match_smoketest`. Delete that folder before rerunning: a run resumes its own checkpoints.
+
+STEP_NUMBERS_PLACEHOLDER
+
 #### Troubleshooting (WSL2)
 - `EGL_NOT_INITIALIZED` / `failed to open /dev/dri/renderD128: Permission denied`: the render device is owned by a group your user is not in. Check with `ls -ln /dev/dri`, then either run `sudo chmod 666 /dev/dri/renderD128` (resets when WSL restarts) or add yourself to the owning group permanently, e.g. for gid 992: `sudo groupadd -g 992 render992 && sudo usermod -aG render992 $USER`, followed by `wsl --shutdown`.
 - `pyglet.gl.ContextException: Could not create GL context` during evaluation: `PYOPENGL_PLATFORM=egl` is not set.
