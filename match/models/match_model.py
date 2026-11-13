@@ -750,6 +750,7 @@ class MatchModel(nn.Module):
     if data.is_clip:
       data, clip_len = data.fold_clip()
     gaussian_parameters = self._forward_frame_gaussians(data, dtype, clip_len)
+    temporal_outputs = self._temporal_losses(data, gaussian_parameters, clip_len)
 
     # data preprocessing for loss calculation
     output_res = self.opt.output_res
@@ -779,7 +780,7 @@ class MatchModel(nn.Module):
       outputs = self._losses_on_frames(data, gaussian_parameters, **loss_kwargs)
       # every term is a mean over the B * T frames, so T times it is the clips' mean of the per-frame sums
       outputs["loss"] = outputs["loss"] * clip_len
-      return outputs
+      return self._add_temporal_losses(outputs, temporal_outputs)
 
     n_frames = len(gaussian_parameters["xyz"])
     per_frame = [
@@ -803,6 +804,41 @@ class MatchModel(nn.Module):
         outputs[k] = torch.cat(values)
       else:  # logged terms and metrics: mean over frames
         outputs[k] = torch.stack(values).mean()
+    return self._add_temporal_losses(outputs, temporal_outputs)
+
+  def _temporal_losses(self, frames: data_util.MatchBatch, gaussian_parameters: dict[str, Tensor],
+                       clip_len: int) -> dict[str, Tensor]:
+    """The temporal trajectory loss (Options.temporal_loss_weight) of a batch of clips folded into frames:
+    'temporal_loss', the weighted loss to add once per clip (mean over the clips), and the unweighted terms
+    'temporal_xyz_loss' (final texel positions, mm^2) and 'temporal_rgb_loss' (texel colours), means over the
+    clips, for logging. Empty for clips of fewer than 3 frames. With every weight 0 nothing gets a gradient."""
+    if clip_len < 3:
+      return {}
+    n_clips = len(gaussian_parameters["xyz"]) // clip_len
+    device = gaussian_parameters["xyz"].device
+    dataset_idx = frames.get("dataset_idx", torch.zeros((n_clips * clip_len,), dtype=torch.long))
+    weights = torch.tensor(self.opt.temporal_loss_weight, device=device, dtype=torch.float32)
+    # one weight per dataset (MatchRunner.init_loss_weights), or a single float for every clip
+    weights = weights.expand(n_clips) if weights.ndim == 0 else weights[dataset_idx[::clip_len]]  # (n_clips,)
+    with torch.set_grad_enabled(torch.is_grad_enabled() and bool((weights != 0).any())):
+      masked = self.mask_gaussians({k: gaussian_parameters[k] for k in ("xyz", "rgb")})
+      trajectories = {
+          k: einops.rearrange(v.float(), "(b t) 1 c l 1 -> b t l c", t=clip_len) for k, v in masked.items()}
+      texel_weights = self.masked_gaussian_geometry_loss_weights
+      xyz_loss = temporal_trajectory_loss(trajectories["xyz"] * 1000.0, texel_weights)  # (n_clips,), mm^2
+      rgb_loss = temporal_trajectory_loss(trajectories["rgb"], texel_weights)
+      loss = general_util.weight_loss(
+          xyz_loss + self.opt.temporal_loss_rgb_weight * rgb_loss, weights, drop_zero_weights=True)
+    return {"temporal_loss": loss, "temporal_xyz_loss": xyz_loss.detach().mean(),
+            "temporal_rgb_loss": rgb_loss.detach().mean()}
+
+  @staticmethod
+  def _add_temporal_losses(outputs: dict, temporal_outputs: dict[str, Tensor]) -> dict:
+    """`outputs` with the temporal loss added to 'loss' once per clip and its terms logged."""
+    if not temporal_outputs:
+      return outputs
+    outputs = dict(outputs, **{k: v for k, v in temporal_outputs.items() if k != "temporal_loss"})
+    outputs["loss"] = outputs["loss"] + temporal_outputs["temporal_loss"].to(outputs["loss"].dtype)
     return outputs
 
   def _losses_on_frames(
