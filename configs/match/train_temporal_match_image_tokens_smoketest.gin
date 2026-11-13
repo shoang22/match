@@ -1,0 +1,13 @@
+# Single-GPU smoke test of the pixel-aligned ablation (#39): configs/match/train_temporal_match_smoketest.gin with the image-token
+# temporal sublayers on. A few clip steps (T=4, 12 input and 12 render views) on TCE049's SEN segment, one validation pass and
+# one checkpoint; it checks the loop runs and records step time and peak memory. Not a real training.
+#
+# PYOPENGL_PLATFORM=egl PYTHONPATH=$(pwd) PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True torchrun --standalone --nnodes=1 --nproc-per-node=1 scripts/match/train_match.py --gin_configs configs/match/train_temporal_match_image_tokens_smoketest.gin
+#
+# Delete the output folder before rerunning (a run resumes its own checkpoint).
+
+include 'configs/match/train_temporal_match_smoketest.gin'
+NAME = 'temporal_match_image_tokens_smoketest'
+
+Options:
+  temporal_image_tokens = True

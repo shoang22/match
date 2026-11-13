@@ -124,18 +124,21 @@ def test_gradient_checkpointing_keeps_the_image_token_sublayers_forward_and_grad
     torch.testing.assert_close(grads_ckpt[n], g, atol=1e-6, rtol=1e-4, msg=n)
 
 
-STAGE1_CONFIG = 'configs/match/train_temporal_match.gin'
-ABLATION_CONFIG = 'configs/match/train_temporal_match_image_tokens.gin'
-
-
-def test_the_ablation_training_config_differs_from_the_stage1_temporal_config_only_in_the_switch():
+@pytest.mark.parametrize('stage1_config, ablation_config, ablation_folder', [
+    ('train_temporal_match.gin', 'train_temporal_match_image_tokens.gin', 'temporal_match_image_tokens'),
+    ('train_temporal_match_smoketest.gin', 'train_temporal_match_image_tokens_smoketest.gin',
+     'temporal_match_image_tokens_smoketest'),
+], ids=['training', 'smoke'])
+def test_the_ablation_config_differs_from_the_stage1_temporal_config_only_in_the_switch(
+    stage1_config, ablation_config, ablation_folder):
   import dataclasses
 
   from test_clip_training import parsed_options
-  stage1, ablation = parsed_options(STAGE1_CONFIG), parsed_options(ABLATION_CONFIG)
+  stage1 = parsed_options(f'configs/match/{stage1_config}')
+  ablation = parsed_options(f'configs/match/{ablation_config}')
   differing = {f.name for f in dataclasses.fields(stage1) if getattr(stage1, f.name) != getattr(ablation, f.name)}
 
   assert not stage1.temporal_image_tokens and ablation.temporal_image_tokens
   # base_folder: the run's own output folder (its NAME), so the two runs never resume each other's checkpoints
   assert differing == {'temporal_image_tokens', 'base_folder'}
-  assert ablation.base_folder == 'experiments/match/temporal_match_image_tokens'
+  assert ablation.base_folder == f'experiments/match/{ablation_folder}'
