@@ -1196,6 +1196,9 @@ class MatchModel(nn.Module):
     # Metric: PSNR, SSIM and LPIPS
     if do_render:
       with torch.no_grad():
+        # PSNR over the frames with any image loss: weighting by the MSE term's weight alone left no frames (and an
+        # infinite PSNR) when MSE is off, e.g. config_0.gin's render_weight 0 with L1, SSIM and LPIPS on
+        psnr_frames = torch.stack([loss_weights_binary[k] for k in render_loss_keys]).amax(dim=0)
         loss_psnr = -10 * torch.log10(
             general_util.weight_loss(
                 (
@@ -1205,7 +1208,7 @@ class MatchModel(nn.Module):
                     )
                     ** 2
                 ),
-                loss_weights_binary["render"],
+                psnr_frames,
                 drop_zero_weights=True,
             )
         )

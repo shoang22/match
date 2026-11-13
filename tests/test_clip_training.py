@@ -271,3 +271,17 @@ def test_the_smoke_config_trains_a_few_clip_steps_on_the_one_segment_with_tempeh
             'num_input_views', 'num_views', 'num_render_views', 'optimizer'):
     assert getattr(smoke, k) == getattr(default, k), k
   assert smoke.base_folder != default.base_folder
+
+
+@needs_cuda
+@pytest.mark.parametrize('batch', ['frame', 'clip'])
+def test_training_psnr_is_finite_when_the_image_losses_are_l1_ssim_and_lpips_without_mse(tiny_frames, batch):
+  # config_0.gin trains with render_weight 0 (no MSE term) and L1, SSIM and LPIPS on; PSNR is still a metric of
+  # the rendered frames, not a loss.
+  losses = dict(ALL_LOSSES, render_weight=[0.])
+  model = build(temporal=True, clip_length=3, **losses).to('cuda').train()
+  inputs = as_batch(tiny_frames[0]) if batch == 'frame' else as_clip(tiny_frames)
+
+  psnr = model.compute_loss(to(inputs, 'cuda'), lpips_loss=None, step=1)['psnr']
+
+  assert torch.isfinite(psnr) and psnr > 0, psnr
