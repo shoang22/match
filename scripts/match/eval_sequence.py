@@ -4,7 +4,7 @@ checkpoint runs on windows of frames and keeps each frame from one window (slidi
 
 Flicker-only run: with no held-out cameras (e.g. a calibrated capture whose cameras are all inputs), the
 configured input camera `fixed_view_input_camera` is the fixed view. The run scores flicker and geometric
-jitter there, but no image quality, which would be no novel-view result.
+jitter there, but no image quality, which would be no novel-view result; metrics.json's `quality_scores` says so.
 
 Writes to `out_dir`: a 24 fps grid video of labelled panels (each source frame held for its true
 duration), a faster preview of the grid (each source frame shown once, at preview_fps), a metrics JSON
@@ -54,10 +54,12 @@ def build_panels(plan, opt) -> list[seq_panels.Panel]:
 
 
 def build_metric_collectors(plan) -> list[seq_metrics.MetricCollector]:
-    """Image quality is scored only at held-out cameras: at an input camera it would be no novel-view result."""
-    image_quality = [seq_metrics.ImageMetrics()] if plan.heldout_camera_ids else []
+    """Image quality is scored only at held-out cameras: at an input camera it would be no novel-view result, so a
+    flicker-only run writes a note that it was not computed instead."""
+    image_quality = (seq_metrics.ImageMetrics() if plan.heldout_camera_ids
+                     else seq_metrics.ImageQualityNotComputed(plan.fixed_view_camera))
     # RAFT for the temporal metrics runs on the CPU (~2.5 s per pair): the model still holds the GPU.
-    return image_quality + [seq_metrics.TemporalMetrics(device='cpu'), seq_metrics.GeometricJitter()]
+    return [image_quality, seq_metrics.TemporalMetrics(device='cpu'), seq_metrics.GeometricJitter()]
 
 
 def load_sequence(opt, heldout_camera_ids, fixed_view_input_camera=None):

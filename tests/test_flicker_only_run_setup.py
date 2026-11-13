@@ -40,8 +40,21 @@ def test_the_same_four_panels_and_the_real_panel_says_which_kind_of_camera_it_sh
 
 
 def test_a_flicker_only_run_scores_flicker_and_jitter_but_not_image_quality():
-    kinds = [type(c) for c in eval_sequence.build_metric_collectors(FLICKER_ONLY)]
-    assert kinds == [seq_metrics.TemporalMetrics, seq_metrics.GeometricJitter]
+    collectors = eval_sequence.build_metric_collectors(FLICKER_ONLY)
+    assert seq_metrics.ImageMetrics not in [type(c) for c in collectors]
+    assert seq_metrics.TemporalMetrics in [type(c) for c in collectors]
+    assert seq_metrics.GeometricJitter in [type(c) for c in collectors]
+
+
+def test_a_flicker_only_run_says_in_its_metrics_that_no_image_quality_scores_were_computed():
+    (note,) = [c for c in eval_sequence.build_metric_collectors(FLICKER_ONLY)
+               if not isinstance(c, (seq_metrics.TemporalMetrics, seq_metrics.GeometricJitter))]
+    note.add_frame(None)
+
+    sections = note.finish()
+
+    assert sections == {'quality_scores': 'not computed: no held-out cameras; the fixed view (cam 401875) is an '
+                                          'input camera'}
 
 
 def test_a_run_with_heldout_cameras_also_scores_image_quality():

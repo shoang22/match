@@ -114,6 +114,9 @@ def test_a_flicker_only_run_has_no_image_quality_scores_and_its_fixed_view_is_an
     metrics = load_metrics(flicker_run)
     assert metrics['heldout_cameras'] == []
     assert 'per_frame' not in metrics and 'summary' not in metrics
+    # ... and says so (story 46)
+    assert metrics['quality_scores'].startswith('not computed'), metrics['quality_scores']
+    assert f"(cam {flicker_run.fixed_view_camera}) is an input camera" in metrics['quality_scores']
     assert IMAGE_METRICS_PLOT not in metrics['plots']
     assert not (flicker_run.out_dir / IMAGE_METRICS_PLOT).exists()
     assert metrics['fixed_view_kind'] == 'input'

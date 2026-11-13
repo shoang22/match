@@ -36,6 +36,7 @@ METRICS_SECTIONS = ['model', 'subject', 'segments', 'frames', 'heldout_cameras',
                     'input_cameras', 'video', 'output_frames', 'preview', 'per_frame', 'summary', 'temporal', 'jitter',
                     'plots']
 IMAGE_QUALITY_SECTIONS = ['per_frame', 'summary']  # only in runs with held-out cameras
+FLICKER_ONLY_SECTIONS = ['quality_scores']  # only in runs without: the note that image quality was not computed
 
 # How far temporal MATCH at initialization may score from per-frame MATCH. At initialization the temporal sublayers
 # are exact no-ops, so the only differences are GPU nondeterminism and fp16 numerics of running the 3 frames as one
@@ -97,7 +98,7 @@ class EvalRun:
     def metrics_sections(self):
         if self.heldout_cameras:
             return METRICS_SECTIONS
-        return [s for s in METRICS_SECTIONS if s not in IMAGE_QUALITY_SECTIONS]
+        return [s for s in METRICS_SECTIONS if s not in IMAGE_QUALITY_SECTIONS] + FLICKER_ONLY_SECTIONS
 
     @property
     def out_dir(self) -> Path:

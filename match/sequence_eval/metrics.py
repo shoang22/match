@@ -165,6 +165,24 @@ class TemporalMetrics:
         return {'temporal': {'camera': self.fixed_view_camera, 'per_pair': per_pair, 'summary': summary}}
 
 
+
+class ImageQualityNotComputed:
+    """Stands in for ImageMetrics in a flicker-only run: no scores, only a note in metrics.json that image quality
+    was not computed and why (at an input camera it would be no novel-view result).
+
+    JSON section 'quality_scores': 'not computed: ...'
+    """
+
+    def __init__(self, fixed_view_camera):
+        self.fixed_view_camera = fixed_view_camera
+
+    def add_frame(self, ctx):
+        pass
+
+    def finish(self):
+        return {'quality_scores': f'not computed: no held-out cameras; the fixed view (cam {self.fixed_view_camera}) '
+                                  'is an input camera'}
+
 class GeometricJitter:
     """Frame-to-frame jitter of every texel's predicted position, split into the TEMPEH part and MATCH's offset.
 
