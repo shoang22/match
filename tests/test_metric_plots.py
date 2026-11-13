@@ -17,7 +17,7 @@ def image_scores(seed):
     return {'psnr': 24.0 + seed, 'ssim': 0.75 + 0.01 * seed, 'lpips': 0.23 - 0.01 * seed}
 
 
-def synthetic_metrics(frames=FRAMES, cameras=CAMERAS):
+def synthetic_metrics(frames=FRAMES, cameras=CAMERAS, fixed_view_camera=None):
     per_pair = {
         frame: {'previous_frame': previous,
                 'prediction': {'raw_flicker': 0.014, 'flow_aligned_error': 0.011},
@@ -32,7 +32,7 @@ def synthetic_metrics(frames=FRAMES, cameras=CAMERAS):
         'frames': list(frames),
         'heldout_cameras': list(cameras),
         'per_frame': {f: {c: image_scores(i + j) for j, c in enumerate(cameras)} for i, f in enumerate(frames)},
-        'temporal': {'camera': cameras[0], 'per_pair': per_pair, 'summary': {}},
+        'temporal': {'camera': fixed_view_camera or cameras[0], 'per_pair': per_pair, 'summary': {}},
         'jitter': {'units': 'mm', 'per_frame': jitter, 'summary': {}},
     }
 
@@ -74,3 +74,21 @@ def test_missing_metric_sections_are_an_error(tmp_path, section):
     del metrics[section]
     with pytest.raises(KeyError, match=section):
         write_metric_plots(tmp_path, metrics)
+
+
+def test_missing_image_metrics_are_an_error_when_there_are_heldout_cameras(tmp_path):
+    metrics = synthetic_metrics()
+    del metrics['per_frame']
+    with pytest.raises(KeyError, match='per_frame'):
+        write_metric_plots(tmp_path, metrics)
+
+
+def test_a_flicker_only_run_gets_the_temporal_and_jitter_plots_only(tmp_path):
+    # no held-out cameras, so no image-quality scores; the fixed view is an input camera
+    metrics = synthetic_metrics(cameras=[], fixed_view_camera='401875')
+    del metrics['per_frame']
+    names = write_metric_plots(tmp_path, metrics)
+    assert names == ['plot_temporal_metrics.png', 'plot_geometric_jitter.png']
+    for name in names:
+        assert_png(tmp_path / name)
+    assert not (tmp_path / 'plot_image_metrics.png').exists()

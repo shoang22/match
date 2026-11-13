@@ -14,9 +14,10 @@ if TYPE_CHECKING:  # the runner pulls in the model, TF and diffusers; keep this 
 class SequencePlan:
     """What the run evaluates and how the grid video shows it, fixed before the first forward pass.
 
-    sequence: the frames to evaluate and the held-out cameras.
+    sequence: the frames to evaluate and the held-out cameras (none in a flicker-only run).
     schedule: index of the source frame shown in every grid-video frame (outputs.output_frame_schedule).
-    fixed_view_camera: ID of the held-out camera used as the fixed novel viewpoint (closest to frontal).
+    fixed_view_camera: ID of the camera of the fixed view: the held-out camera closest to frontal, or, with no
+      held-out cameras, the configured input camera.
     """
     sequence: 'SequenceFrames'
     schedule: list
@@ -25,6 +26,11 @@ class SequencePlan:
     @property
     def heldout_camera_ids(self):
         return self.sequence.heldout_camera_ids
+
+    @property
+    def fixed_view_is_input(self):
+        """True in a flicker-only run: the fixed view is an input camera, so it is no novel view."""
+        return self.fixed_view_camera not in self.heldout_camera_ids
 
     @property
     def n_output_frames(self):
@@ -37,7 +43,7 @@ class SequencePlan:
 
 @dataclass
 class HeldOutView:
-    """One held-out camera on one frame. Images are (3,H,W) float in [0,1] at the real image's crop and size."""
+    """One held-out camera (or, in a flicker-only run, the fixed-view input camera) on one frame. Images are (3,H,W) float in [0,1] at the real image's crop and size."""
     camera_id: str
     pred: torch.Tensor  # MATCH render with the camera's real calibration, white background
     real: torch.Tensor  # real image, background as captured
@@ -58,9 +64,10 @@ class FrameContext:
       the 12 input views and the 'extra_*' held-out keys.
     gaussians: the masked Gaussians in dataset coordinates (not centred), dict of (1,1,C,L,1). Don't modify
       them in place; centre a copy for orbit renders.
-    heldout: one HeldOutView per held-out camera, in config order.
-    fixed_view_camera: ID of the held-out camera used as the fixed novel viewpoint (closest to frontal).
+    heldout: one HeldOutView per held-out camera, in config order (empty in a flicker-only run).
+    fixed_view_camera: ID of the camera of the fixed view (see SequencePlan).
     output_frame_indices: indices of the grid-video frames that show this source frame.
+    input_view: the fixed view when it is an input camera (flicker-only run), else None.
     """
     runner: 'MatchRunner'
     frame_index: int
@@ -70,10 +77,11 @@ class FrameContext:
     heldout: dict
     fixed_view_camera: str
     output_frame_indices: list
+    input_view: HeldOutView = None
 
     @property
     def fixed_view(self) -> HeldOutView:
-        return self.heldout[self.fixed_view_camera]
+        return self.input_view if self.input_view is not None else self.heldout[self.fixed_view_camera]
 
     @property
     def height(self):
@@ -94,20 +102,30 @@ class FrameContext:
         return out['image'][0].float().clamp(0, 1)
 
 
-def build_frame_context(runner, batch, gaussians, plan: SequencePlan, frame_index):
-    """Renders every held-out camera with its real calibration and bundles the frame's data."""
-    C2W = batch['extra_C2W'][0]
-    fxfycxcy = batch['extra_fxfycxcy'][0]
-    real = batch['extra_image'][0].float()
-    mask = batch['extra_mask'][0].float()
+def _render_views(runner, gaussians, C2W, fxfycxcy, real, mask, camera_ids):
+    """Renders the Gaussians from each camera (V,4,4), (V,4) at the real images' size: one HeldOutView per camera."""
     H, W = real.shape[-2:]
     pred = runner.render_gaussians(gaussians, C2W[None], fxfycxcy[None], height=H, width=W,
                                    bg_color=(1.0, 1.0, 1.0))['image'][0].float().clamp(0, 1)
-    heldout = {
-        camera: HeldOutView(camera, pred[e], real[e], mask[e], C2W[e], fxfycxcy[e])
-        for e, camera in enumerate(plan.heldout_camera_ids)
-    }
+    return {camera: HeldOutView(camera, pred[v], real[v], mask[v], C2W[v], fxfycxcy[v])
+            for v, camera in enumerate(camera_ids)}
+
+
+def build_frame_context(runner, batch, gaussians, plan: SequencePlan, frame_index):
+    """Renders every held-out camera (or, in a flicker-only run, the fixed-view input camera) with its real
+    calibration and bundles the frame's data."""
+    heldout, input_view = {}, None
+    if plan.heldout_camera_ids:
+        heldout = _render_views(runner, gaussians, batch['extra_C2W'][0], batch['extra_fxfycxcy'][0],
+                                batch['extra_image'][0].float(), batch['extra_mask'][0].float(),
+                                plan.heldout_camera_ids)
+    if plan.fixed_view_is_input:
+        v = [str(c) for c in batch['camera'][0].tolist()].index(plan.fixed_view_camera)
+        views = slice(v, v + 1)
+        (input_view,) = _render_views(runner, gaussians, batch['C2W'][0][views], batch['fxfycxcy'][0][views],
+                                      batch['image'][0][views].float(), batch['mask'][0][views].float(),
+                                      [plan.fixed_view_camera]).values()
     return FrameContext(
         runner=runner, frame_index=frame_index, frame_id=batch['frame'][0], batch=batch, gaussians=gaussians,
         heldout=heldout, fixed_view_camera=plan.fixed_view_camera,
-        output_frame_indices=plan.output_frame_indices(frame_index))
+        output_frame_indices=plan.output_frame_indices(frame_index), input_view=input_view)
