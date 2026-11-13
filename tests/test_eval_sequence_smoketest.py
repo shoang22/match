@@ -1,7 +1,9 @@
 """What the smoke run's videos show (#8 to #12): panel timing, the orbit, the TEMPEH mesh's alignment and the preview.
 
-Checked on the smoke run, on the flicker-only run (#28), whose fixed view is an input camera, and on the temporal
-smoke run (#35, temporal MATCH in sliding windows).
+Checked on the smoke run, on the flicker-only run (#28), whose fixed view is an input camera, on the temporal
+smoke run (#35, temporal MATCH in sliding windows), and on the two `background 1` runs (#29, #36): 30 frames 0.1 s
+apart of a subject who moves a lot (the fixed view changes by ~21 levels from the first frame to the last, against
+~3 over TCE049's 3 smoke frames) and wears a white shirt.
 The output contract shared with the full run (timing, metrics, plots, config copies) is in
 test_eval_sequence_outputs.py. Skipped until each run has been done (run commands in the headers of
 configs/match/eval_sequence_smoketest.gin and eval_sequence_flicker_smoketest.gin); EVAL_SEQUENCE_SMOKE_DIR and
@@ -10,8 +12,8 @@ EVAL_SEQUENCE_FLICKER_DIR check runs written elsewhere.
 import numpy as np
 import pytest
 
-from eval_sequence_runs import (FLICKER, GRID_COLS, LABEL_H, PANEL_H, PANEL_W, SMOKE, TEMPORAL_SMOKE, decode_video,
-                                load_metrics)
+from eval_sequence_runs import (BACKGROUND1_FLICKER, BACKGROUND1_TEMPORAL, FLICKER, GRID_COLS, LABEL_H, PANEL_H,
+                                PANEL_W, SMOKE, TEMPORAL_SMOKE, decode_video, load_metrics)
 
 # Panels by their grid position (the labels name the fixed view's camera, and the real panel says whether it is
 # held out or an input).
@@ -19,7 +21,8 @@ PREDICTION, REAL, TEMPEH, ORBIT = range(4)
 STATIC_PANELS = [PREDICTION, REAL, TEMPEH]
 
 
-@pytest.fixture(scope='module', params=[SMOKE, FLICKER, TEMPORAL_SMOKE], ids=lambda run: run.name)
+@pytest.fixture(scope='module', params=[SMOKE, FLICKER, TEMPORAL_SMOKE, BACKGROUND1_FLICKER, BACKGROUND1_TEMPORAL],
+                ids=lambda run: run.name)
 def run(request):
     return request.param
 
@@ -76,9 +79,11 @@ def test_static_panels_hold_still_between_source_frames(metrics, video_frames):
         change = frame_changes(panel_frames(metrics, video_frames, panel))  # change into frame k+1
         within_hold = [c for k, c in enumerate(change) if source[k + 1] == source[k]]
         at_new_frame = [c for k, c in enumerate(change) if source[k + 1] != source[k]]
-        # Held frames are repeats (codec noise only), never blends; static panels all switch at the same output frames.
+        # Held frames are repeats (codec noise only), never blends; static panels switch at the source frames' starts.
+        # A switch can be as small as the codec noise when the subject holds still between two source frames (0.23
+        # levels on `background 1`'s real panel, against a median switch of 2.0), so the typical switch is compared.
         assert max(within_hold) < 0.5, (label, max(within_hold))
-        assert min(at_new_frame) > 2 * max(within_hold), (label, at_new_frame, max(within_hold))
+        assert np.median(at_new_frame) > 2 * max(within_hold), (label, at_new_frame, max(within_hold))
 
 
 def test_orbit_camera_moves_smoothly_on_every_output_frame(metrics, video_frames):
@@ -93,8 +98,12 @@ def test_orbit_goes_round_once_over_the_whole_video(metrics, video_frames):
     tile = panel_frames(metrics, video_frames, ORBIT)
     orbit, steps = tile[:, LABEL_H:], frame_changes(tile)
     from_start = np.abs(orbit - orbit[0]).mean(axis=(1, 2, 3))
-    # The last frame is one step before the frontal start pose, so the orbit closes when the video loops ...
-    assert from_start[-1] < 1.5 * np.median(steps), (from_start[-1], np.median(steps))
+    # The last frame is one step before the frontal start pose, so the orbit closes when the video loops. The two
+    # frames also show different source frames, so the head itself may have moved: allow for as much change as the
+    # fixed-view prediction shows between them (the camera path's closure is checked in test_orbit_panel.py) ...
+    prediction = panel_frames(metrics, video_frames, PREDICTION)[:, LABEL_H:]
+    head_motion = np.abs(prediction[-1] - prediction[0]).mean()
+    assert from_start[-1] < 1.5 * np.median(steps) + head_motion, (from_start[-1], np.median(steps), head_motion)
     # ... and never gets back to the start pose within the video, where only the face would differ (~2.5 levels),
     # so the orbit isn't repeated or cut mid-loop.
     assert min(from_start[1:]) > 0.5 * np.median(steps), (from_start, np.median(steps))
@@ -107,11 +116,16 @@ def test_tempeh_mesh_lines_up_with_the_head_in_the_prediction_and_real_panels(ru
         mesh, pred, real = (silhouette(panel_frames(metrics, video_frames, panel)[k, LABEL_H:])
                             for panel in [TEMPEH, PREDICTION, REAL])
         assert 0.05 < mesh.mean() < 0.8, f'output frame {k}: mesh covers {mesh.mean():.2f} of the panel'
-        # The coarse mesh has no hair or shoulders, so it sits inside the head rather than matching its outline.
-        # Aligned, 99.7% of it lies on the head; shifting it by 20 px drops that to ~97%.
+        # The coarse mesh has no hair or shoulders, so it sits inside the head rather than matching its outline. Its
+        # bottom fifth (neck) runs onto clothing, which a white shirt merges with the white background, so only the
+        # top 80% of its rows count. Aligned, at least 99.6% (TCE049) and 98.1% (`background 1`) of that lies on the
+        # head; shifted by 20 px, at most 96.4% and 94.4%.
+        rows = np.flatnonzero(mesh.any(axis=1))
+        above_neck = mesh.copy()
+        above_neck[rows[0] + int(0.8 * (rows[-1] - rows[0] + 1)):] = False
         for name, head in [('prediction', pred), ('real', real)]:
-            inside = (mesh & head).sum() / mesh.sum()
-            assert inside > 0.98, f'output frame {k}: {inside:.3f} of the mesh lies on the {name} head'
+            inside = (above_neck & head).sum() / above_neck.sum()
+            assert inside > 0.975, f'output frame {k}: {inside:.3f} of the mesh lies on the {name} head'
 
 
 def test_preview_frames_are_grid_frames_not_blends(run, metrics, video_frames, preview_frames):
@@ -120,6 +134,8 @@ def test_preview_frames_are_grid_frames_not_blends(run, metrics, video_frames, p
         same = np.abs(preview_frames[i] - video_frames[k]).mean()
         others = [np.abs(preview_frames[i] - video_frames[j]).mean() for j in first_shown if j != k]
         # Codec noise only: ~1.05 levels with all 4 panels (both videos are h264-encoded from the same image),
-        # against ~6-8 between different source frames; a 50/50 blend of neighbours would sit near 3.
+        # against ~6-8 between different TCE049 source frames and ~3 between `background 1`'s, 0.1 s apart. A 50/50
+        # blend of neighbours would sit about half-way to the nearest other frame, so the preview frame must be
+        # closer than that.
         assert same < 2.0, (i, same)
-        assert same < 0.25 * min(others), (i, same, others)
+        assert same < 0.5 * min(others), (i, same, others)

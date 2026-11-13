@@ -9,7 +9,7 @@ from match.models import image_feature_net
 from match.models.gsplat_renderer import gsplat_renderer
 from match.models.networks.attention import *
 from match.options import Options
-from match.utils import file_util, image_util, mesh_util, op_util, data_util, general_util, geo_util, uv_util
+from match.utils import file_util, image_util, mesh_util, op_util, data_util, general_util, geo_util, uv_util, math_util
 import torch
 from torch import nn
 from torch import Tensor
@@ -46,12 +46,21 @@ def temporal_trajectory_loss(trajectories: Tensor, texel_weights: Tensor | None 
   B, T, L, _ = trajectories.shape
   if T < 3:
     return trajectories.new_zeros(B)
-  second_diff = trajectories[:, 2:] - 2 * trajectories[:, 1:-1] + trajectories[:, :-2]  # (B, T-2, L, C)
+  second_diff = math_util.second_difference(trajectories, dim=1)  # (B, T-2, L, C)
   squared = second_diff.square().sum(dim=-1)  # (B, T-2, L)
   if texel_weights is None:
     return squared.mean(dim=(1, 2))
   texel_weights = texel_weights.to(squared)
   return (squared * texel_weights).sum(dim=2).mean(dim=1) / texel_weights.sum()
+
+
+# The output layers that predict each texel's offset and attributes from its UV token.
+OFFSET_HEAD_LAYERS = ('out_xyz', 'out_rgb', 'out_scale', 'out_rotation', 'out_opacity')
+
+
+def is_offset_head_parameter(name: str) -> bool:
+  """True for parameters (state-dict keys) of the offset head, `OFFSET_HEAD_LAYERS`."""
+  return name.split('.')[0] in OFFSET_HEAD_LAYERS
 
 
 def optimizer_param_groups(model: nn.Module, opt: Options) -> list[dict]:
@@ -198,6 +207,12 @@ class MatchModel(nn.Module):
     if opt.temporal and opt.temporal_freeze_spatial:
       for name, param in self.named_parameters():
         param.requires_grad_(is_temporal_parameter(name))
+    if opt.train_offset_head_only:
+      if opt.temporal:
+        raise ValueError('train_offset_head_only is for per-frame MATCH (temporal = False); temporal MATCH chooses '
+                         'what trains with temporal_freeze_spatial')
+      for name, param in self.named_parameters():
+        param.requires_grad_(is_offset_head_parameter(name))
 
     
   def to(self, *args, **kwargs):
@@ -828,7 +843,8 @@ class MatchModel(nn.Module):
       trajectories = {
           k: einops.rearrange(v.float(), "(b t) 1 c l 1 -> b t l c", t=clip_len) for k, v in masked.items()}
       texel_weights = self.masked_gaussian_geometry_loss_weights
-      xyz_loss = temporal_trajectory_loss(trajectories["xyz"] * 1000.0, texel_weights)  # (n_clips,), mm^2
+      xyz_loss = temporal_trajectory_loss(
+          trajectories["xyz"] * math_util.MM_PER_WORLD_UNIT, texel_weights)  # (n_clips,), mm^2
       rgb_loss = temporal_trajectory_loss(trajectories["rgb"], texel_weights)
       loss = general_util.weight_loss(
           xyz_loss + self.opt.temporal_loss_rgb_weight * rgb_loss, weights, drop_zero_weights=True)
@@ -1180,6 +1196,9 @@ class MatchModel(nn.Module):
     # Metric: PSNR, SSIM and LPIPS
     if do_render:
       with torch.no_grad():
+        # PSNR over the frames with any image loss: weighting by the MSE term's weight alone left no frames (and an
+        # infinite PSNR) when MSE is off, e.g. config_0.gin's render_weight 0 with L1, SSIM and LPIPS on
+        psnr_frames = torch.stack([loss_weights_binary[k] for k in render_loss_keys]).amax(dim=0)
         loss_psnr = -10 * torch.log10(
             general_util.weight_loss(
                 (
@@ -1189,7 +1208,7 @@ class MatchModel(nn.Module):
                     )
                     ** 2
                 ),
-                loss_weights_binary["render"],
+                psnr_frames,
                 drop_zero_weights=True,
             )
         )
@@ -1470,6 +1489,12 @@ class MatchModel(nn.Module):
       self.register_buffer('_masked_gaussian_geometry_loss_weights', _masked_gaussian_geometry_loss_weights, persistent=False)
     return self._masked_gaussian_geometry_loss_weights
 
+
+  def texels_in_vertex_group(self, group: str) -> torch.Tensor:
+    """(L,) bool over the masked Gaussians' texels: True where every vertex of the texel's triangle is in the
+    template's vertex group (e.g. 'fitting_region_skin', the face skin without eyes, mouth interior and ears)."""
+    in_group = self.template_vertex_group_weights[self.template_vertex_group_names.index(group)] > 0
+    return in_group[self.uv_grid_vert_ids_filtered].all(dim=1)
 
   @property
   def uv_grid_vert_ids_filtered(self) -> torch.Tensor:

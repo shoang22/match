@@ -45,7 +45,7 @@ def test_the_held_out_cameras_are_targets_for_every_sentence_frame_and_a_camera_
     targets = target_cameras_on_disk(capture, list(HELDOUT_CAMERAS) + [NOT_DOWNLOADED_CAMERA])
 
     for frame in SEGMENT_FRAMES:
-        assert targets(capture.sid, frame) == list(HELDOUT_CAMERAS)
+        assert targets(frame) == list(HELDOUT_CAMERAS)
 
 
 def test_a_test_frame_loads_with_its_inputs_and_its_target_camera_as_the_extra_view(capture):

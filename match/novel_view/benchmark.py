@@ -11,9 +11,10 @@ from typing import Callable
 
 from match.novel_view.samples import SamplePlan
 from match.sequence_eval.predictors import stack_window
-from match.sequence_eval.windows import window_plan
+from match.sequence_eval.windows import INFERENCE_MODES, window_plan
 
-MODES = ('per_frame', 'sliding')
+# Block mode is left out: it stress-tests flicker at window boundaries, and a benchmark sample is a single frame.
+MODES = tuple(m for m in INFERENCE_MODES if m != 'block')
 
 
 def _without_target(batch):

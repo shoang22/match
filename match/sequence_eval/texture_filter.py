@@ -50,13 +50,3 @@ def blend(textures: list[dict], weights: torch.Tensor, centre: int) -> dict:
         out[key] = acc.to(textures[centre][key].dtype)
     out['rotation'] = torch.nn.functional.normalize(out['rotation'], p=2, dim=CHANNELS)
     return out
-
-
-def filter_textures(textures: list[dict], sigma: float) -> list[dict]:
-    """Filters a whole sequence of masked Gaussian textures (dicts of (B,V,C,L,1)), one output per frame."""
-    n = len(textures)
-    filtered = []
-    for t in range(n):
-        start, weights = kernel(t, n, sigma)
-        filtered.append(blend(textures[start:start + len(weights)], weights, centre=t - start))
-    return filtered

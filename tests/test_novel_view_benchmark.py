@@ -14,7 +14,7 @@ RUN = [str(100 + i) for i in range(6)]  # one run of 6 frames with complete inpu
 
 def make_plan(context_length=4, frames=RUN):
     captures = {'S1': [FrameInputs(f, 'seq', ('a', 'b')) for f in frames]}
-    return plan_samples(captures, lambda subject, frame: ['x'], n_samples=None, seed=0, context_length=context_length)
+    return plan_samples(captures, {'S1': lambda frame: ['x']}, n_samples=None, seed=0, context_length=context_length)
 
 
 class FakeData:

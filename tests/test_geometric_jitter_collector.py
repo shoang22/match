@@ -10,7 +10,7 @@ import pytest
 import torch
 
 from match.sequence_eval.context import FrameContext
-from match.sequence_eval.metrics import GeometricJitter
+from match.sequence_eval.metrics import GeometricJitter, TexelRegion
 
 L = 300  # masked texels
 FRAMES = ['32885', '32897', '32909', '32921']
@@ -40,8 +40,8 @@ def contexts(tempeh, final, frames=FRAMES):
             for i, frame in enumerate(frames)]
 
 
-def collect(ctxs):
-    collector = GeometricJitter()
+def collect(ctxs, region=None):
+    collector = GeometricJitter(region)
     for ctx in ctxs:
         collector.add_frame(ctx)
     return collector.finish()
@@ -107,3 +107,22 @@ def test_two_frames_have_no_triples():
     for source in SOURCES:
         assert math.isnan(jitter['summary'][source]['mean'])
         assert jitter['summary'][source]['worst_frames'] == []
+
+
+def test_jitter_outside_the_texel_region_does_not_count_and_the_region_is_recorded():
+    # The first 100 texels are the region (e.g. face skin); only texels outside it jump in frame 1.
+    in_region = torch.zeros(L, dtype=torch.bool)
+    in_region[:100] = True
+    tempeh = [surface().clone() for _ in FRAMES]
+    tempeh[1][:, ~in_region] += 0.001 * unit_directions()[:, ~in_region]
+    final = [t + 0.005 for t in tempeh]
+
+    jitter = collect(contexts(tempeh, final), region=TexelRegion('fitting_region_skin', in_region))['jitter']
+
+    assert all(entry[s] == pytest.approx(0., abs=1e-4) for entry in jitter['per_frame'].values() for s in SOURCES)
+    assert jitter['texels'] == {'region': 'fitting_region_skin', 'n_texels': 100, 'n_masked_texels': L}
+
+
+def test_without_a_region_every_masked_texel_counts():
+    jitter = collect(contexts(*tempeh_jumping_in_frame_1()))['jitter']
+    assert jitter['texels'] == {'region': 'all', 'n_texels': L, 'n_masked_texels': L}

@@ -341,6 +341,26 @@ def is_temporal_parameter(name: str) -> bool:
   return any(part.startswith("temporal_") for part in name.split("."))
 
 
+def _temporal_sublayers(
+    dim: int,
+    num_heads: int,
+    qk_norm: bool,
+    norm_eps: float,
+    temporal: bool,
+    temporal_image_tokens: bool,
+) -> tuple[Optional[TemporalAttention], Optional[TemporalAttention]]:
+  """A block's temporal sublayers, run before its spatial attention: (over UV tokens, over image tokens).
+
+  The UV-token sublayer (divided space-time attention) exists with `temporal`; the image-token one, one
+  sequence per (camera, image patch position), only for the pixel-aligned ablation (`temporal_image_tokens`).
+  None where off.
+  """
+  uv = TemporalAttention(dim, num_heads, qk_norm, norm_eps) if temporal else None
+  img = (TemporalAttention(dim, num_heads, qk_norm, norm_eps)
+         if temporal and temporal_image_tokens else None)
+  return uv, img
+
+
 def _add_temporal_residual(
     temporal_attn: Optional[TemporalAttention],
     x: Tensor,
@@ -443,14 +463,8 @@ class CorrespondenceAwareLLaMaTransformerBlock(nn.Module):
   ):
     super().__init__()
 
-    # temporal sublayer over UV tokens (divided space-time attention), run before the spatial attention
-    self.temporal_uv = (
-        TemporalAttention(dim, num_heads, qk_norm, norm_eps) if temporal else None
-    )
-    # ablation: the same over image tokens, one sequence per (camera, image patch position)
-    self.temporal_img = (
-        TemporalAttention(dim, num_heads, qk_norm, norm_eps)
-        if temporal and temporal_image_tokens else None
+    self.temporal_uv, self.temporal_img = _temporal_sublayers(
+        dim, num_heads, qk_norm, norm_eps, temporal, temporal_image_tokens
     )
     self.norm1 = RMSNorm(dim, norm_eps)
     self.attn = CorrespondenceAwareAttention(
@@ -527,14 +541,8 @@ class PerViewLLaMaTransformerBlock(nn.Module):
   ):
     super().__init__()
 
-    # temporal sublayer over UV tokens (divided space-time attention), run before the spatial attention
-    self.temporal_uv = (
-        TemporalAttention(dim, num_heads, qk_norm, norm_eps) if temporal else None
-    )
-    # ablation: the same over image tokens, one sequence per (camera, image patch position)
-    self.temporal_img = (
-        TemporalAttention(dim, num_heads, qk_norm, norm_eps)
-        if temporal and temporal_image_tokens else None
+    self.temporal_uv, self.temporal_img = _temporal_sublayers(
+        dim, num_heads, qk_norm, norm_eps, temporal, temporal_image_tokens
     )
     self.norm1 = RMSNorm(dim, norm_eps)
     self.attn = Attention(dim, num_heads, qk_norm)

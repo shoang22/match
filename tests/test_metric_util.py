@@ -26,7 +26,8 @@ def make_mask() -> torch.Tensor:
     return mask
 
 
-METRICS = [metric_util.masked_psnr, metric_util.masked_ssim, metric_util.masked_lpips]
+METRICS = [metric_util.masked_psnr, metric_util.masked_ssim, metric_util.masked_lpips, metric_util.masked_l1,
+           metric_util.masked_l2]
 
 
 def test_identical_images_give_infinite_psnr():
@@ -43,6 +44,19 @@ def test_identical_images_give_lpips_of_zero():
     img = make_image(0)
     assert metric_util.masked_lpips(img, img.clone(), make_mask()) == pytest.approx(0.0, abs=1e-6)
 
+
+
+def test_l1_and_l2_are_the_mean_absolute_and_squared_errors_over_foreground_pixels_and_channels():
+    mask = make_mask()
+    real = torch.full((3, H, W), 0.5)
+    pred = real.clone()
+    pred[0][mask] += 0.2  # one channel of every foreground pixel off by 0.2, the others exact
+    pred[:, ~mask] = 1.0  # background errors don't count
+
+    assert metric_util.masked_l1(pred, real, mask) == pytest.approx(0.2 / 3)
+    assert metric_util.masked_l2(pred, real, mask) == pytest.approx(0.04 / 3)
+    # PSNR is the same squared error in dB
+    assert metric_util.masked_psnr(pred, real, mask) == pytest.approx(-10 * math.log10(0.04 / 3))
 
 @pytest.mark.parametrize('metric', METRICS, ids=lambda f: f.__name__)
 @pytest.mark.parametrize('which', ['pred', 'real'])
@@ -61,7 +75,7 @@ def test_pixels_outside_mask_do_not_change_score(metric, which):
 
 
 # Direction of improvement for each metric: +1 higher is better, -1 lower is better.
-HIGHER_IS_BETTER = {'masked_psnr': 1, 'masked_ssim': 1, 'masked_lpips': -1}
+HIGHER_IS_BETTER = {'masked_psnr': 1, 'masked_ssim': 1, 'masked_lpips': -1, 'masked_l1': -1, 'masked_l2': -1}
 
 
 @pytest.mark.parametrize('metric', METRICS, ids=lambda f: f.__name__)

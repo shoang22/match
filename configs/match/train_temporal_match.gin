@@ -1,8 +1,9 @@
-# Temporal MATCH (#24): fine-tune the temporal sublayers of the pretrained MATCH model (uv_res_1024, 860k) on Ava-256 clips,
-# single GPU (RTX 4090, 24 GB). The spatial weights and the Sapiens encoder stay frozen; only the temporal sublayers, their norms
-# and the frame embeddings train. MATCH's losses apply to every frame of a clip and are summed over the clip.
-#
+# Temporal MATCH (#24), stage 1: fine-tune the temporal sublayers of the pretrained MATCH model on Ava-256 clips, single GPU.
 # PYOPENGL_PLATFORM=egl PYTHONPATH=$(pwd) PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True torchrun --standalone --nnodes=1 --nproc-per-node=1 scripts/match/train_match.py --gin_configs configs/match/train_temporal_match.gin
+#
+# The pretrained model is uv_res_1024 at 860k, on one RTX 4090 (24 GB). The spatial weights and the Sapiens encoder stay frozen;
+# only the temporal sublayers, their norms and the frame embeddings train. MATCH's losses apply to every frame of a clip and are
+# summed over the clip.
 #
 # Needs data that is not on disk yet: the Ava-256 training subjects (configs/data/download_ava256_full.gin, with kinematic
 # tracking for the geometry losses) and their stride-1 TEMPEH predictions (configs/tempeh/save_predictions_train_stride1.yml, #34).

@@ -13,6 +13,7 @@ Each run's tests skip until it has been done (see eval_sequence_runs.py). The vi
 flicker-only runs is checked further in test_eval_sequence_smoketest.py.
 """
 import math
+import re
 
 import pytest
 from PIL import Image
@@ -113,6 +114,9 @@ def test_a_flicker_only_run_has_no_image_quality_scores_and_its_fixed_view_is_an
     metrics = load_metrics(flicker_run)
     assert metrics['heldout_cameras'] == []
     assert 'per_frame' not in metrics and 'summary' not in metrics
+    # ... and says so (story 46)
+    assert metrics['quality_scores'].startswith('not computed'), metrics['quality_scores']
+    assert f"(cam {flicker_run.fixed_view_camera}) is an input camera" in metrics['quality_scores']
     assert IMAGE_METRICS_PLOT not in metrics['plots']
     assert not (flicker_run.out_dir / IMAGE_METRICS_PLOT).exists()
     assert metrics['fixed_view_kind'] == 'input'
@@ -170,6 +174,15 @@ def test_jitter_is_finite_for_every_source_on_every_triple_of_frames(run, metric
         assert all(is_finite_float(entry[s]) and entry[s] >= 0 for s in JITTER_SOURCES), entry
 
 
+def test_jitter_averages_over_the_face_skin_texels(metrics):
+    texels = metrics['jitter'].get('texels')
+    if texels is None:
+        pytest.skip('the run predates the jitter texel region; rerun it')
+    # The texels of uv_res_1024's grid whose triangle has every vertex in the fitting_region_skin vertex group
+    # (assets/ava256/vertex_groups_with_neck_and_scalp.json), out of every texel the masked Gaussians hold.
+    assert texels == {'region': 'fitting_region_skin', 'n_texels': 379_891, 'n_masked_texels': 1_048_528}
+
+
 def test_jitter_summary_has_the_mean_and_worst_frames(run, metrics):
     jitter = metrics['jitter']
     for source in JITTER_SOURCES:
@@ -205,4 +218,7 @@ def test_plots_of_every_per_frame_metric_are_written(run, metrics):
 def test_gin_configs_are_copied(run, metrics):
     # Same bindings as the committed config; its header comment may have been edited since the run.
     assert config_bindings(run.out_dir / 'config_0.gin') == config_bindings(REPO_ROOT / run.config)
-    assert f"OUT_DIR = '{run.out_dir_setting}'" in (run.out_dir / 'config_all.gin').read_text()
+    # The run wrote to the folder the tests read, however either path was spelled (relative to the repo root, or
+    # absolute, e.g. through EVAL_SEQUENCE_*_DIR or a worktree's experiments/ symlink).
+    (out_dir,) = re.findall(r"^OUT_DIR = '(.*)'$", (run.out_dir / 'config_all.gin').read_text(), flags=re.M)
+    assert (REPO_ROOT / out_dir).resolve() == run.out_dir.resolve()

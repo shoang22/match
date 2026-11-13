@@ -89,3 +89,17 @@ def test_the_tempeh_part_moves_with_the_mesh_and_the_offset_stays_in_range(model
                                shift[:, None].expand(3, int(valid.sum())), atol=1e-6, rtol=0)
     offset = (moved['xyz'] - moved['tempeh_xyz'])[0, 0][:, valid]
     assert offset.abs().max() < 1  # sigmoid * 2 - 1
+
+
+def test_the_face_region_is_the_texels_of_triangles_with_every_vertex_in_the_skin_group(model):
+    texels = model.texels_in_vertex_group('fitting_region_skin')  # over the masked Gaussians' texel axis
+    groups = model.template_vertex_group_names
+    corners = model.uv_grid_vert_ids_filtered  # (L, 3) vertex IDs of each texel's triangle
+
+    assert texels.shape == (len(corners),) and texels.dtype == torch.bool
+    assert 0 < texels.sum() < len(texels)
+    skin = model.template_vertex_group_weights[groups.index('fitting_region_skin')] > 0
+    assert skin[corners[texels]].all()
+    for other in ['eyes', 'mouth', 'ears']:  # parts with their own groups never count as face skin
+        part = model.template_vertex_group_weights[groups.index(other)] > 0
+        assert not part[corners[texels]].any(), other

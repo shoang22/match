@@ -1,5 +1,6 @@
 """Single-frame novel-view benchmark under MATCH's protocol: held-out subjects, 12 input views, and a target camera
-disjoint from the inputs, scored with masked PSNR, SSIM and LPIPS (the sequence evaluation's image metrics).
+disjoint from the inputs, scored with masked PSNR, SSIM and LPIPS (the sequence evaluation's image metrics) and masked
+L1 and L2. CSIM is not computed (follow-up #45).
 
 Test frames and target cameras are drawn with a fixed seed from the frames with complete inputs
 (match/novel_view/samples.py), independent of the checkpoint, so every model is scored on the same samples.
@@ -32,6 +33,7 @@ from match.sequence_eval import outputs as seq_outputs
 from match.sequence_eval import predictors as seq_predictors
 from match.sequence_eval.context import render_views
 from match.sequence_eval.metrics import IMAGE_METRICS
+from match.utils import metric_util
 
 
 def load_captures(opt):
@@ -46,13 +48,17 @@ def load_captures(opt):
     return captures
 
 
+# The scores of a target view: the sequence evaluation's image metrics, plus masked L1 and L2.
+SCORES = {**{name: m.fn for name, m in IMAGE_METRICS.items()}, 'l1': metric_util.masked_l1, 'l2': metric_util.masked_l2}
+
+
 def target_view_scores(runner, batch, gaussians):
-    """The image metrics of the Gaussians rendered from the batch's target camera, as the sequence evaluation
-    scores a held-out camera."""
+    """The SCORES of the Gaussians rendered from the batch's target camera, as the sequence evaluation scores a
+    held-out camera."""
     camera = str(batch['extra_camera'][0, 0].item())
     view = render_views(runner, gaussians, batch['extra_C2W'][0], batch['extra_fxfycxcy'][0],
                         batch['extra_image'][0].float(), batch['extra_mask'][0].float(), [camera])[camera]
-    return {name: m.fn(view.pred, view.real, view.mask) for name, m in IMAGE_METRICS.items()}
+    return {name: fn(view.pred, view.real, view.mask) for name, fn in SCORES.items()}
 
 
 @gin.configurable()
@@ -76,9 +82,8 @@ def eval_novel_view(opt: Options, out_dir: str = None, target_camera_ids: list =
     # everything that can fail on the data fails before the model is loaded
     captures = load_captures(opt)
     targets = {sid: target_cameras_on_disk(c, target_camera_ids) for sid, c in captures.items()}
-    plan = plan_samples({sid: frame_inputs(c) for sid, c in captures.items()},
-                        lambda sid, frame: targets[sid](sid, frame), n_samples=n_samples, seed=seed,
-                        context_length=context_length)
+    plan = plan_samples({sid: frame_inputs(c) for sid, c in captures.items()}, targets, n_samples=n_samples,
+                        seed=seed, context_length=context_length)
     if not plan.samples:
         raise ValueError(f'No test frames: {plan.n_without_inputs} frames lack complete inputs (TEMPEH predictions) '
                          f'and {plan.n_in_short_runs} lie in runs shorter than {context_length} frames')

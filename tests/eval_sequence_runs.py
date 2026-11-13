@@ -36,6 +36,30 @@ METRICS_SECTIONS = ['model', 'subject', 'segments', 'frames', 'heldout_cameras',
                     'input_cameras', 'video', 'output_frames', 'preview', 'per_frame', 'summary', 'temporal', 'jitter',
                     'plots']
 IMAGE_QUALITY_SECTIONS = ['per_frame', 'summary']  # only in runs with held-out cameras
+FLICKER_ONLY_SECTIONS = ['quality_scores']  # only in runs without: the note that image quality was not computed
+
+# How far temporal MATCH at initialization may score from per-frame MATCH. At initialization the temporal sublayers
+# are exact no-ops, so the only differences are GPU nondeterminism and fp16 numerics of running the 3 frames as one
+# batch instead of one at a time. Each bound is ~3x the largest noise floor measured on the smoke frames (largest
+# absolute difference over frames, cameras and sources) in two ways:
+#                         run to run (the same computation   batch size (per-frame MATCH, one frame
+#                         twice; largest of 4 pairs)         at a time vs one window of 3)
+#   psnr (dB)             0.0076                             0.0070
+#   ssim                  0.0069                             0.0028
+#   lpips                 5.2e-4                             6.3e-4
+#   raw flicker           3.5e-5                             4.1e-5
+#   flow-aligned error    2.1e-5                             1.4e-5
+#   jitter (mm)           1.1e-3                             1.8e-3
+# Temporal MATCH at initialization vs per-frame MATCH measured (two pairs of runs) at most 0.0045 dB, 0.0068,
+# 4.0e-4, 8.1e-6, 9.8e-6 and 1.6e-3 mm.
+TOLERANCE = {
+    'psnr': 0.025,  # dB
+    'ssim': 0.02,
+    'lpips': 2e-3,
+    'raw_flicker': 1.5e-4,
+    'flow_aligned_error': 1.5e-4,
+    'jitter_mm': 0.005,
+}
 
 
 def panel_labels(camera, kind):
@@ -74,7 +98,7 @@ class EvalRun:
     def metrics_sections(self):
         if self.heldout_cameras:
             return METRICS_SECTIONS
-        return [s for s in METRICS_SECTIONS if s not in IMAGE_QUALITY_SECTIONS]
+        return [s for s in METRICS_SECTIONS if s not in IMAGE_QUALITY_SECTIONS] + FLICKER_ONLY_SECTIONS
 
     @property
     def out_dir(self) -> Path:

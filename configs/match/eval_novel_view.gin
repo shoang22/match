@@ -1,8 +1,10 @@
 # PYTHONPATH=$(pwd) PYOPENGL_PLATFORM=egl conda run -n match --no-capture-output torchrun --standalone --nnodes=1 --nproc-per-node=1 scripts/match/eval_novel_view.py --gin_configs configs/match/eval_novel_view.gin
 # Single-frame novel-view benchmark (#40) of the pretrained MATCH model (uv_res_1024, 860k) under MATCH's protocol: held-out Ava-256
 # subjects (assets/ava256/validation_ids.json, `training: False`), the 12 standard input cameras, and per test frame one target camera
-# drawn with SEED from TARGET_CAMERA_IDS, never an input of any frame of its 4-frame sliding window. Scores: masked PSNR, SSIM and
-# LPIPS at the target camera (the sequence evaluation's image metrics). MATCH's paper also reports L1, L2 and CSIM; they are not here.
+# drawn with SEED from TARGET_CAMERA_IDS, never an input of any frame of its 4-frame sliding window. Scores at the target camera:
+# masked PSNR, SSIM and LPIPS (the sequence evaluation's image metrics), and masked L1 and L2 (mean absolute and squared error over
+# the foreground pixels and channels, images in [0, 1]). MATCH's paper also reports CSIM; it needs a face-recognition model and is
+# follow-up #45.
 #
 # Temporal MATCH: append --gin_bindings "TEMPORAL = True" (with MODEL_PATH/CKPT of a temporal checkpoint, or the per-frame one for
 # temporal MATCH at initialization) and a new OUT_DIR. Each test frame is then predicted from its sliding window and that frame's

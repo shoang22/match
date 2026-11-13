@@ -11,10 +11,8 @@ from typing import Callable, Iterable, Iterator, Protocol
 import torch
 
 from match.sequence_eval import texture_filter
-from match.sequence_eval.windows import window_slot
-
-INFERENCE_MODES = ('per_frame', 'sliding', 'block')
-
+from match.sequence_eval.windows import INFERENCE_MODES, window_slot
+from match.utils import clip_util
 
 def resolve_inference_mode(temporal: bool, inference_mode: str | None) -> str:
     """The inference mode to run: the one asked for, or by default 'sliding' for a temporal checkpoint and
@@ -144,19 +142,26 @@ def _on_cpu(batch: dict) -> dict:
     return type(batch)({k: v.cpu() if isinstance(v, torch.Tensor) else v for k, v in batch.items()})
 
 
+class WindowCameraError(ValueError):
+    """The frames of a window do not have the same input cameras in the same order."""
+
+
 def stack_window(batches: list[dict]) -> dict:
     """A clip batch (B=1) from consecutive frames' batches (B=1), as `default_collate` makes it from one clip
-    sample: tensors (1, T, ...), `frame` as T lists of one ID, other lists (subject, sequence) from the first frame."""
-    first = batches[0]
-    clip = type(first)()
-    for k, v in first.items():
-        if isinstance(v, torch.Tensor):
-            clip[k] = torch.stack([b[k] for b in batches], dim=1)
-        elif k == 'frame':
-            clip[k] = [list(b[k]) for b in batches]
-        else:
-            clip[k] = v
-    return clip
+    sample: tensors (1, T, ...), `frame` as T lists of one ID, other lists (subject, sequence) from the first frame.
+
+    The temporal model aligns image tokens across a clip by their position, i.e. by input camera and pixel patch,
+    so every frame must have the same input cameras in the same order (clip training picks them once per clip).
+    Raises WindowCameraError otherwise: the dataset picked cameras frame by frame, and a camera known invalid on
+    one frame changed the selection.
+    """
+    cameras = [b['camera'][0].tolist() for b in batches]
+    if any(c != cameras[0] for c in cameras):
+        frames = [b['frame'][0] for b in batches]
+        raise WindowCameraError(
+            f'The frames of a window have different input cameras, so their image tokens would not line up: '
+            + ', '.join(f'{f}: {c}' for f, c in zip(frames, cameras)))
+    return clip_util.stack_frames(batches, time_dim=1)
 
 
 class WindowedPredictor:

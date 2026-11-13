@@ -17,6 +17,8 @@ from typing import NamedTuple
 
 import torch
 
+from match.utils import math_util
+
 
 def _prepare(pred: torch.Tensor, real: torch.Tensor, mask: torch.Tensor):
     """Return pred, real as (1, C, H, W) float and mask as (1, 1, H, W) bool."""
@@ -42,13 +44,26 @@ def masked_psnr(pred: torch.Tensor, real: torch.Tensor, mask: torch.Tensor) -> f
 
     Returns math.inf when pred and real are identical inside the mask (no cap).
     """
-    pred, real, mask = _prepare(pred, real, mask)
-    m = mask.expand_as(pred)
-    mse = ((pred[m] - real[m]) ** 2).mean().item()
+    mse = masked_l2(pred, real, mask)
     if mse == 0:
         return math.inf
     return -10.0 * math.log10(mse)
 
+
+
+def masked_l1(pred: torch.Tensor, real: torch.Tensor, mask: torch.Tensor) -> float:
+    """Mean absolute error over the foreground pixels (all channels), for images in [0, 1]."""
+    pred, real, mask = _prepare(pred, real, mask)
+    m = mask.expand_as(pred)
+    return (pred[m] - real[m]).abs().mean().item()
+
+
+def masked_l2(pred: torch.Tensor, real: torch.Tensor, mask: torch.Tensor) -> float:
+    """Mean squared error over the foreground pixels (all channels), for images in [0, 1]; masked_psnr is
+    -10 log10 of it."""
+    pred, real, mask = _prepare(pred, real, mask)
+    m = mask.expand_as(pred)
+    return ((pred[m] - real[m]) ** 2).mean().item()
 
 def _fill_background(pred, real, mask, background: float):
     """Paint the same colour over the background of both images."""
@@ -321,5 +336,5 @@ def geometric_jitter(positions: torch.Tensor, valid: torch.Tensor = None) -> lis
         positions = positions[:, :, valid.to(positions.device)]
     if positions.shape[-1] == 0:
         return [math.nan] * max(positions.shape[0] - 2, 0)
-    second_diff = positions[2:] - 2 * positions[1:-1] + positions[:-2]  # (T-2, 3, N)
+    second_diff = math_util.second_difference(positions, dim=0)  # (T-2, 3, N)
     return second_diff.norm(dim=1).mean(dim=1).tolist()

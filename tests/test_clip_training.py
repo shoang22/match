@@ -1,7 +1,7 @@
 """Clip training of temporal MATCH (#37): the loss on a clip, the optimizer's parameter groups, starting a
 fine-tune from the pretrained weights, and the training configs.
 
-The loss tests reuse the tiny CPU model of test_temporal_match_model.py (64x64 UV grid, 2 views of 32x24
+The loss tests reuse the tiny CPU model of tests/tiny_match.py (64x64 UV grid, 2 views of 32x24
 pixels, no Sapiens). They need assets/ for the template mesh and the pretrained config.
 
     CUDA_VISIBLE_DEVICES= conda run -n match python -m pytest -q tests/test_clip_training.py
@@ -14,64 +14,21 @@ import torch
 if not Path('assets').exists():
     pytest.skip('assets/ is missing; see the worktree section of CLAUDE.md', allow_module_level=True)
 
-from test_temporal_match_model import (  # noqa: E402
-    as_batch, as_clip, build, synthetic_frame)
-
-# One weight per dataset, as MatchRunner.init_loss_weights leaves them. The geometry, scale and opacity
-# losses run on the CPU; the image losses (MSE, L1, SSIM) need the CUDA rasterizer. No LPIPS network.
-GEOMETRY_LOSSES = dict(
-    geom_only_steps=0, lpips_weight=[0.], render_weight=[0.], l1_weight=[0.], ssim_weight=[0.],
-    xyz_weight=[1e-3], mesh_vert_weight=[1e-3], scale_weight=[1e-3], opacity_weight=[1e-3],
-    num_render_views=2, output_bg='white', noloss_masks=[],
-)
-ALL_LOSSES = dict(GEOMETRY_LOSSES, render_weight=[0.5], l1_weight=[0.8], ssim_weight=[0.2])
-needs_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason='the Gaussian rasterizer needs CUDA')
-
-
-@pytest.fixture(scope='module')
-def frames():
-  num_verts = build(temporal=False).num_verts
-  return [synthetic_frame(num_verts, seed) for seed in range(3)]
-
-
-def per_frame_twin(temporal_model):
-  """Per-frame MATCH with the temporal model's spatial weights and options."""
-  options = {k: getattr(temporal_model.opt, k) for k in ALL_LOSSES}
-  model = build(temporal=False, **options).to(next(temporal_model.parameters()).device)
-  missing, _ = model.load_state_dict(temporal_model.state_dict(), strict=False)
-  assert not missing
-  return model
-
-
-def loss(model, batch, lpips_loss=None) -> torch.Tensor:
-  return model.compute_loss(batch, lpips_loss=lpips_loss, step=1)['loss']
-
-
-def to(batch: dict, device: str) -> dict:
-  return {k: v.to(device) for k, v in batch.items()}
+from tiny_match import (  # noqa: E402
+    ALL_LOSSES, GEOMETRY_LOSSES, as_batch, as_clip, build, clip_loss_and_grads, loss, needs_cuda, per_frame_twin, to)
+from training_configs import parsed_options  # noqa: E402
 
 
 @pytest.mark.parametrize('losses, device', [
     (GEOMETRY_LOSSES, 'cpu'), pytest.param(ALL_LOSSES, 'cuda', marks=needs_cuda)], ids=['geometry', 'all'])
 @torch.no_grad()
-def test_the_loss_on_a_clip_is_the_sum_of_per_frame_matchs_losses_on_its_frames(frames, losses, device):
+def test_the_loss_on_a_clip_is_the_sum_of_per_frame_matchs_losses_on_its_frames(tiny_frames, losses, device):
   temporal = build(temporal=True, clip_length=3, **losses).to(device)
   per_frame = per_frame_twin(temporal)
 
-  expected = sum(loss(per_frame, to(as_batch(frame), device)) for frame in frames)
+  expected = sum(loss(per_frame, to(as_batch(frame), device)) for frame in tiny_frames)
 
-  torch.testing.assert_close(loss(temporal, to(as_clip(frames), device)), expected, atol=1e-5, rtol=1e-5)
-
-
-def clip_loss_and_grads(frames, grad_checkpoint, losses, device, lpips_loss):
-  from test_temporal_match_model import randomize_temporal_parameters
-  model = build(temporal=True, clip_length=3, grad_checkpoint=grad_checkpoint, **losses).to(device)
-  randomize_temporal_parameters(model)
-  model.train()
-  torch.manual_seed(0)  # the same random input and render views and background colour in both runs
-  value = loss(model, to(as_clip(frames), device), lpips_loss)
-  value.backward()
-  return value.detach(), {n: p.grad for n, p in model.named_parameters() if p.requires_grad}
+  torch.testing.assert_close(loss(temporal, to(as_clip(tiny_frames), device)), expected, atol=1e-5, rtol=1e-5)
 
 
 @pytest.fixture(scope='module')
@@ -83,10 +40,10 @@ def lpips_vgg():
 @pytest.mark.parametrize('losses, device', [
     (GEOMETRY_LOSSES, 'cpu'), pytest.param(dict(ALL_LOSSES, lpips_weight=[1.]), 'cuda', marks=needs_cuda)],
     ids=['geometry', 'all'])
-def test_gradient_checkpointing_does_not_change_a_clip_loss_or_its_gradients(frames, losses, device, request):
+def test_gradient_checkpointing_does_not_change_a_clip_loss_or_its_gradients(tiny_frames, losses, device, request):
   lpips_loss = request.getfixturevalue('lpips_vgg').to(device) if device == 'cuda' else None
-  expected_loss, expected_grads = clip_loss_and_grads(frames, False, losses, device, lpips_loss)
-  value, grads = clip_loss_and_grads(frames, True, losses, device, lpips_loss)
+  expected_loss, expected_grads = clip_loss_and_grads(tiny_frames, False, losses, device, lpips_loss)
+  value, grads = clip_loss_and_grads(tiny_frames, True, losses, device, lpips_loss)
 
   torch.testing.assert_close(value, expected_loss, atol=1e-6, rtol=1e-5)
   assert grads.keys() == expected_grads.keys()
@@ -146,6 +103,42 @@ def test_the_spatial_weights_can_train_as_a_second_group_with_their_own_learning
 def test_a_spatial_learning_rate_that_would_do_nothing_is_refused(options):
   with pytest.raises(ValueError, match='temporal_spatial_lr'):
     build(**options)
+
+
+# The layers that predict each texel's offset and attributes from its UV token.
+OFFSET_HEAD = {'out_xyz.weight', 'out_rgb.weight', 'out_scale.weight', 'out_rotation.weight', 'out_opacity.weight'}
+
+
+def test_per_frame_match_on_clips_can_train_only_its_offset_head():
+  model = build(temporal=False, train_offset_head_only=True)
+  runner = optimizer_of(model)
+
+  trainable = {n for n, p in model.named_parameters() if p.requires_grad}
+  assert trainable == OFFSET_HEAD
+  # dim 32 to 16x16 texels per UV token of xyz (3), rgb (3), scale (3), rotation (4) and opacity (1)
+  assert sum(model.get_parameter(n).numel() for n in trainable) == 32 * 16 * 16 * 14
+  (group,) = runner.optimizer.param_groups
+  assert names_of(model, group['params']) == OFFSET_HEAD
+  assert names_of(model, runner.params_to_optimize) == OFFSET_HEAD
+
+
+def test_a_clip_loss_backpropagates_into_the_offset_head_only(tiny_frames):
+  model = build(temporal=False, train_offset_head_only=True, **GEOMETRY_LOSSES).train()
+
+  loss(model, as_clip(tiny_frames)).backward()
+
+  grads = {n: p.grad for n, p in model.named_parameters()}
+  # the geometry losses reach the position, scale and opacity layers (colour and rotation need the rasterizer)
+  geometry_heads = {'out_xyz.weight', 'out_scale.weight', 'out_opacity.weight'}
+  assert all(grads[n] is not None and grads[n].abs().max() > 0 for n in geometry_heads)
+  assert all(g is None for n, g in grads.items() if n not in OFFSET_HEAD)
+
+
+def test_training_only_the_offset_head_is_refused_for_temporal_match():
+  # temporal MATCH trains its temporal sublayers (temporal_freeze_spatial); an offset-head-only run of it would
+  # silently freeze them too
+  with pytest.raises(ValueError, match='train_offset_head_only'):
+    build(temporal=True, train_offset_head_only=True)
 
 
 class RecordingAccelerator:
@@ -218,19 +211,6 @@ TRAIN_CONFIG = 'configs/match/train_temporal_match.gin'
 SMOKE_CONFIG = 'configs/match/train_temporal_match_smoketest.gin'
 
 
-def parsed_options(config):
-  """Options as scripts/match/train_match.py parses them from `config`."""
-  import gin
-  from match.options import Options
-  from match.utils import gin_util  # noqa: F401 (registers join_strings)
-  gin.clear_config()
-  try:
-    gin.parse_config_files_and_bindings([config], bindings=None, skip_unknown=True)
-    return Options()
-  finally:
-    gin.clear_config()
-
-
 def heldout_subjects() -> set[str]:
   import json
   with open('assets/ava256/validation_ids.json') as f:
@@ -291,3 +271,17 @@ def test_the_smoke_config_trains_a_few_clip_steps_on_the_one_segment_with_tempeh
             'num_input_views', 'num_views', 'num_render_views', 'optimizer'):
     assert getattr(smoke, k) == getattr(default, k), k
   assert smoke.base_folder != default.base_folder
+
+
+@needs_cuda
+@pytest.mark.parametrize('batch', ['frame', 'clip'])
+def test_training_psnr_is_finite_when_the_image_losses_are_l1_ssim_and_lpips_without_mse(tiny_frames, batch):
+  # config_0.gin trains with render_weight 0 (no MSE term) and L1, SSIM and LPIPS on; PSNR is still a metric of
+  # the rendered frames, not a loss.
+  losses = dict(ALL_LOSSES, render_weight=[0.])
+  model = build(temporal=True, clip_length=3, **losses).to('cuda').train()
+  inputs = as_batch(tiny_frames[0]) if batch == 'frame' else as_clip(tiny_frames)
+
+  psnr = model.compute_loss(to(inputs, 'cuda'), lpips_loss=None, step=1)['psnr']
+
+  assert torch.isfinite(psnr) and psnr > 0, psnr

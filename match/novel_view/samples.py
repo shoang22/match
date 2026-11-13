@@ -4,13 +4,15 @@ a temporal model's window around each test frame may use.
 MATCH's protocol: held-out subjects, 12 input views, and a target camera disjoint from the inputs. Here:
 - A frame has complete inputs when its input cameras can be picked and it has a TEMPEH prediction (coarse mesh
   and the UV maps of its input cameras). A run is a maximal stretch of consecutive frames with complete inputs
-  in one sequence (Ava-256 segment), so a frame without a TEMPEH prediction splits its sequence.
+  and the same input cameras in one sequence (Ava-256 segment), so a frame without a TEMPEH prediction splits its
+  sequence, and so does a change of the input cameras (a camera known invalid on some frames): a temporal model
+  aligns image tokens across its window by camera and pixel patch, so a window needs one camera selection.
 - Test frames are drawn only from runs of at least `context_length` frames, so the sliding window of every
   test frame lies inside its run and never needs a frame without a TEMPEH prediction. A temporal model's window
   (`clip_length` <= `context_length`) is planned over the run, so at a run's edges it shifts inward exactly as at
   a sequence's edges in the sequence evaluation. Frames of shorter runs are not test frames.
-- The target camera is drawn from the cameras available for the test frame that are not an input of any frame of
-  its sliding context window, so neither model sees the target view.
+- The target camera is drawn from the cameras available for the test frame that are not an input of its run (every
+  frame of a run, so of the sliding context window, has the same inputs), so neither model sees the target view.
 - The plan depends only on the data, the seed, `n_samples` and `context_length`, never on the checkpoint or
   inference mode, so per-frame and temporal runs score the same frames from the same cameras.
 """
@@ -58,10 +60,11 @@ class SamplePlan:
 
 
 def complete_runs(frames: list[FrameInputs]) -> list[list[FrameInputs]]:
-    """Maximal stretches of consecutive frames with complete inputs within one sequence, in frame-list order."""
+    """Maximal stretches of consecutive frames with complete inputs and the same input cameras within one sequence,
+    in frame-list order."""
     runs, current = [], []
     for f in frames:
-        if f.inputs is None or (current and current[-1].sequence != f.sequence):
+        if f.inputs is None or (current and (current[-1].sequence, current[-1].inputs) != (f.sequence, f.inputs)):
             if current:
                 runs.append(current)
             current = []
@@ -72,12 +75,12 @@ def complete_runs(frames: list[FrameInputs]) -> list[list[FrameInputs]]:
     return runs
 
 
-def plan_samples(captures: dict[str, list[FrameInputs]], target_cameras: Callable[[str, str], list],
+def plan_samples(captures: dict[str, list[FrameInputs]], target_cameras: dict[str, Callable[[str], list]],
                  n_samples: int | None, seed: int, context_length: int) -> SamplePlan:
     """Draws up to n_samples test frames (all eligible frames if None or fewer) and a target camera for each.
 
-    captures: subject -> its frame list. target_cameras(subject, frame): the cameras with data for that frame
-    that may be targets. Samples keep the frames' order (subjects in the given order).
+    captures: subject -> its frame list. target_cameras: subject -> (frame -> the cameras with data for that frame
+    that may be targets). Samples keep the frames' order (subjects in the given order).
     """
     eligible, n_without, n_short = [], 0, 0
     for subject, frame_list in captures.items():
@@ -101,12 +104,11 @@ def plan_samples(captures: dict[str, list[FrameInputs]], target_cameras: Callabl
     for i in chosen:
         subject, run, index, context = eligible[i]
         frame = run[index]
-        seen = {c for f in context for c in f.inputs}
-        candidates = sorted(str(c) for c in target_cameras(subject, frame.frame) if str(c) not in seen)
+        candidates = sorted(str(c) for c in target_cameras[subject](frame.frame) if str(c) not in frame.inputs)
         if not candidates:
             raise NoTargetCameraError(
-                f'{subject} frame {frame.frame}: no target camera outside the inputs {sorted(seen)} of its window '
-                f'{[f.frame for f in context]}')
+                f'{subject} frame {frame.frame}: no target camera outside the inputs {sorted(frame.inputs)} of its '
+                f'window {[f.frame for f in context]}')
         samples.append(BenchmarkSample(
             subject=subject, sequence=frame.sequence, frame=frame.frame,
             target_camera=candidates[int(rng.integers(len(candidates)))],

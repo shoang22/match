@@ -4,7 +4,7 @@ checkpoint runs on windows of frames and keeps each frame from one window (slidi
 
 Flicker-only run: with no held-out cameras (e.g. a calibrated capture whose cameras are all inputs), the
 configured input camera `fixed_view_input_camera` is the fixed view. The run scores flicker and geometric
-jitter there, but no image quality, which would be no novel-view result.
+jitter there, but no image quality, which would be no novel-view result; metrics.json's `quality_scores` says so.
 
 Writes to `out_dir`: a 24 fps grid video of labelled panels (each source frame held for its true
 duration), a faster preview of the grid (each source frame shown once, at preview_fps), a metrics JSON
@@ -53,11 +53,24 @@ def build_panels(plan, opt) -> list[seq_panels.Panel]:
     ]
 
 
-def build_metric_collectors(plan) -> list[seq_metrics.MetricCollector]:
-    """Image quality is scored only at held-out cameras: at an input camera it would be no novel-view result."""
-    image_quality = [seq_metrics.ImageMetrics()] if plan.heldout_camera_ids else []
+# Geometric jitter averages over the face skin: the texels whose triangle lies in the template's fitting_region_skin
+# vertex group (36% of the uv_res_1024 grid). The rest of the grid is ears, eyes, mouth interior, neck and scalp,
+# where TEMPEH's coarse mesh has no reliable surface to measure jitter against.
+JITTER_REGION = 'fitting_region_skin'
+
+
+def jitter_region(model) -> seq_metrics.TexelRegion:
+    return seq_metrics.TexelRegion(JITTER_REGION, model.texels_in_vertex_group(JITTER_REGION))
+
+
+def build_metric_collectors(plan, jitter_region: seq_metrics.TexelRegion = None) -> list[seq_metrics.MetricCollector]:
+    """Image quality is scored only at held-out cameras: at an input camera it would be no novel-view result, so a
+    flicker-only run writes a note that it was not computed instead. jitter_region: the texels the geometric
+    jitter averages over (all masked texels if None)."""
+    image_quality = (seq_metrics.ImageMetrics() if plan.heldout_camera_ids
+                     else seq_metrics.ImageQualityNotComputed(plan.fixed_view_camera))
     # RAFT for the temporal metrics runs on the CPU (~2.5 s per pair): the model still holds the GPU.
-    return image_quality + [seq_metrics.TemporalMetrics(device='cpu'), seq_metrics.GeometricJitter()]
+    return [image_quality, seq_metrics.TemporalMetrics(device='cpu'), seq_metrics.GeometricJitter(jitter_region)]
 
 
 def load_sequence(opt, heldout_camera_ids, fixed_view_input_camera=None):
@@ -200,7 +213,7 @@ def eval_sequence(opt: Options, out_dir: str = None, heldout_camera_ids: list = 
     runner.eval()
 
     panels = build_panels(plan, opt)
-    collectors = build_metric_collectors(plan)
+    collectors = build_metric_collectors(plan, jitter_region(runner.get_unwrapped_model()))
     video = seq_outputs.GridVideoWriter(out_dir, n_frames=plan.n_output_frames, fps=fps)
     preview = seq_outputs.GridVideoWriter(out_dir, n_frames=len(sequence), fps=preview_fps,
                                           name=seq_outputs.PREVIEW_VIDEO)
