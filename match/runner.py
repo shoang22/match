@@ -331,7 +331,10 @@ class MatchRunner:
 
         # (Optional) Load pretrained model or checkpoint
         ckpt_path = general_util.get_ckpt_path(str(ckpt_dir), opt.resume_from_iter)
-        if ckpt_path is None:  # try to load pretrained network
+        fine_tune = opt.temporal if opt.fine_tune is None else opt.fine_tune
+        if ckpt_path is None and fine_tune:
+            logger.info("Fine-tuning from the pretrained weights: step 0, fresh optimizer and LR schedule\n")
+        elif ckpt_path is None:  # try to load pretrained network
             # Load a pretrained model
             if opt.load_pretrained_model is not None:
                 self.logger.info(
@@ -343,7 +346,8 @@ class MatchRunner:
                     opt.load_pretrained_model_ckpt,
                 )
         if ckpt_path is None:
-            logger.info("Training from scratch\n")
+            if not fine_tune:
+                logger.info("Training from scratch\n")
         else:
             logger.info(f"Loading checkpoint from [{ckpt_path}]\n")
             local_ckpt_path = f"{self.local_tmp_dir}/resume_ckpt"

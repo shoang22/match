@@ -114,3 +114,69 @@ def test_the_spatial_weights_can_train_as_a_second_group_with_their_own_learning
 def test_a_spatial_learning_rate_that_would_do_nothing_is_refused(options):
   with pytest.raises(ValueError, match='temporal_spatial_lr'):
     build(**options)
+
+
+class RecordingAccelerator:
+  """Stands in for accelerate.Accelerator in MatchRunner.resume_checkpoint: records which states it loads."""
+  is_main_process = True
+
+  def __init__(self):
+    self.loaded = []
+
+  def wait_for_everyone(self):
+    pass
+
+  def load_state(self, path, strict=True):
+    self.loaded.append(path)
+
+
+def resumed_runner(tmp_path, **overrides):
+  """A MatchRunner ready for resume_checkpoint, for a run in tmp_path whose options load a pretrained model
+  (an empty stand-in for assets/pretrained_models/match/uv_res_1024 and its training state at step 860000)."""
+  import logging
+  from match.runner import MatchRunner
+  from match.utils import file_util
+  pretrained = tmp_path / 'pretrained'
+  (pretrained / 'checkpoints' / '860000').mkdir(parents=True)
+  opt = build(temporal=True).opt
+  opt.load_pretrained_model, opt.load_pretrained_model_ckpt = str(pretrained), 860_000
+  for k, v in overrides.items():
+    assert hasattr(opt, k), f'Options has no field {k}'
+    setattr(opt, k, v)
+  runner = MatchRunner.__new__(MatchRunner)
+  runner.opt, runner.optimizer, runner.global_update_step = opt, None, 0
+  runner.logger = logging.getLogger('test_clip_training')
+  runner.accelerator = RecordingAccelerator()
+  runner.ckpt_dir = file_util.Path(tmp_path / 'run' / 'checkpoints')
+  runner.ckpt_dir.mkdir(parents=True)
+  runner.local_tmp_dir = str(tmp_path / 'local')
+  return runner
+
+
+@pytest.mark.parametrize('overrides', [dict(), dict(temporal=False, fine_tune=True)], ids=['temporal', 'fine_tune'])
+def test_a_fine_tune_starts_at_step_0_without_the_pretrained_runs_optimizer_and_schedule(tmp_path, overrides):
+  runner = resumed_runner(tmp_path, **overrides)
+
+  runner.resume_checkpoint()
+
+  assert runner.accelerator.loaded == []
+  assert runner.global_update_step == 0
+
+
+def test_a_fine_tune_resumes_from_its_own_latest_checkpoint(tmp_path):
+  runner = resumed_runner(tmp_path)
+  (runner.ckpt_dir / '000020').mkdir()
+
+  runner.resume_checkpoint()
+
+  assert len(runner.accelerator.loaded) == 1
+  assert runner.global_update_step == 20
+
+
+def test_per_frame_training_still_resumes_the_pretrained_run(tmp_path):
+  runner = resumed_runner(tmp_path, temporal=False)
+
+  runner.resume_checkpoint()
+
+  assert len(runner.accelerator.loaded) == 1
+  assert runner.global_update_step == 860_000
