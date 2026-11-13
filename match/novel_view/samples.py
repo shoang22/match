@@ -75,12 +75,12 @@ def complete_runs(frames: list[FrameInputs]) -> list[list[FrameInputs]]:
     return runs
 
 
-def plan_samples(captures: dict[str, list[FrameInputs]], target_cameras: Callable[[str, str], list],
+def plan_samples(captures: dict[str, list[FrameInputs]], target_cameras: dict[str, Callable[[str], list]],
                  n_samples: int | None, seed: int, context_length: int) -> SamplePlan:
     """Draws up to n_samples test frames (all eligible frames if None or fewer) and a target camera for each.
 
-    captures: subject -> its frame list. target_cameras(subject, frame): the cameras with data for that frame
-    that may be targets. Samples keep the frames' order (subjects in the given order).
+    captures: subject -> its frame list. target_cameras: subject -> (frame -> the cameras with data for that frame
+    that may be targets). Samples keep the frames' order (subjects in the given order).
     """
     eligible, n_without, n_short = [], 0, 0
     for subject, frame_list in captures.items():
@@ -104,7 +104,7 @@ def plan_samples(captures: dict[str, list[FrameInputs]], target_cameras: Callabl
     for i in chosen:
         subject, run, index, context = eligible[i]
         frame = run[index]
-        candidates = sorted(str(c) for c in target_cameras(subject, frame.frame) if str(c) not in frame.inputs)
+        candidates = sorted(str(c) for c in target_cameras[subject](frame.frame) if str(c) not in frame.inputs)
         if not candidates:
             raise NoTargetCameraError(
                 f'{subject} frame {frame.frame}: no target camera outside the inputs {sorted(frame.inputs)} of its '

@@ -35,8 +35,8 @@ def frame_inputs(capture) -> list[FrameInputs]:
 
 
 def target_cameras_on_disk(capture, camera_ids):
-    """(subject, frame) -> the cameras of camera_ids (in that order) that have calibration, an image and a foreground
-    mask for the frame and aren't known invalid on it (Ava-256 zips). Whether one is an input is left to the plan."""
+    """frame -> the cameras of camera_ids (in that order) that have calibration, an image and a foreground mask for
+    the frame and aren't known invalid on it (Ava-256 zips). Whether one is an input is left to the plan."""
     with open(capture.krt_file_path) as f:
         calibrated = {str(c['cameraId']) for c in json.load(f)['KRT']}
     cameras = [str(c) for c in camera_ids if str(c) in calibrated and str(c) in capture.cameras]
@@ -46,7 +46,7 @@ def target_cameras_on_disk(capture, camera_ids):
     def frames_of(camera):
         return camera_frames_on_disk(capture, camera, all_frames)
 
-    def targets(subject, frame):
+    def targets(frame):
         invalid = capture.invalid_frame_cameras[frame]
         return [c for c in cameras if c not in invalid and frame in frames_of(c)]
     return targets

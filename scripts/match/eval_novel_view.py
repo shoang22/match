@@ -82,9 +82,8 @@ def eval_novel_view(opt: Options, out_dir: str = None, target_camera_ids: list =
     # everything that can fail on the data fails before the model is loaded
     captures = load_captures(opt)
     targets = {sid: target_cameras_on_disk(c, target_camera_ids) for sid, c in captures.items()}
-    plan = plan_samples({sid: frame_inputs(c) for sid, c in captures.items()},
-                        lambda sid, frame: targets[sid](sid, frame), n_samples=n_samples, seed=seed,
-                        context_length=context_length)
+    plan = plan_samples({sid: frame_inputs(c) for sid, c in captures.items()}, targets, n_samples=n_samples,
+                        seed=seed, context_length=context_length)
     if not plan.samples:
         raise ValueError(f'No test frames: {plan.n_without_inputs} frames lack complete inputs (TEMPEH predictions) '
                          f'and {plan.n_in_short_runs} lie in runs shorter than {context_length} frames')
