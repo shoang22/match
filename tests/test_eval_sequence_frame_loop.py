@@ -5,8 +5,10 @@ and the video writers are stand-ins that record what they are given.
 Run: CUDA_VISIBLE_DEVICES= conda run -n match python -m pytest -q tests/test_eval_sequence_frame_loop.py
 """
 import importlib.util
+from pathlib import Path
 from types import SimpleNamespace
 
+import gin
 import pytest
 import torch
 
@@ -103,3 +105,72 @@ def test_frames_held_back_by_the_predictor_are_scored_and_rendered_in_order():
 def test_a_predictor_that_emits_frames_out_of_order_or_misses_one_fails_the_run(order):
     with pytest.raises(eval_sequence.FrameLoadError):
         run(WholeSequencePredictor(order))
+
+
+SEQUENCE_CONFIG = 'configs/match/eval_sequence_SEN_a_good_morrow.gin'
+needs_assets = pytest.mark.skipif(not Path('assets/pretrained_models/match/uv_res_1024/config_0.gin').exists(),
+                                  reason='assets/ is missing; see the worktree section of CLAUDE.md')
+
+
+def make_model_runner():
+    """make_runner() plus a model whose texture for frame i has position 10 * i**2."""
+    def forward(batch, func_name, **kwargs):
+        assert func_name == 'forward_gaussians'
+        i = batch['value'].reshape(1, 1, 1, 1, 1)
+        return {'xyz': 10 * i * i, 'rgb': torch.full_like(i, 0.5), 'scale': torch.full_like(i, 0.01),
+                'opacity': torch.full_like(i, 0.8), 'rotation': torch.tensor([1.0, 0, 0, 0]).reshape(1, 1, 4, 1, 1)}
+    runner = make_runner()
+    runner.model = forward
+    runner.get_unwrapped_model = lambda: SimpleNamespace(mask_gaussians=lambda gaussians: gaussians)
+    return runner
+
+
+@pytest.fixture
+def config():
+    """Parses the sequence evaluation's config with extra bindings, as the script does."""
+    def parse(*bindings):
+        gin.clear_config()
+        gin.parse_config_files_and_bindings(config_files=[SEQUENCE_CONFIG], bindings=list(bindings), skip_unknown=True)
+    yield parse
+    gin.clear_config()
+
+
+def run_configured_predictor():
+    runner = make_model_runner()
+    predictor = eval_sequence.build_predictor(runner)
+    plan = SequencePlan(Sequence(), schedule=SCHEDULE, fixed_view_camera=CAMERA)
+    collector, panel, video, preview = Recorder(), Recorder(), Recorder(), Recorder()
+    eval_sequence.run_frames(runner, plan, predictor, [panel], [collector], video, preview)
+    return [value for _, _, value in collector.frames], predictor.metrics()
+
+
+@needs_assets
+def test_the_sequence_evaluation_scores_unfiltered_per_frame_textures_by_default(config):
+    config()
+
+    positions, metrics = run_configured_predictor()
+
+    assert positions == [0.0, 10.0, 40.0]
+    assert metrics == {}
+
+
+@needs_assets
+def test_the_config_turns_on_the_texture_filter_and_the_metrics_record_its_sigma(config):
+    config('TEXTURE_FILTER_SIGMA = 1.0')
+
+    positions, metrics = run_configured_predictor()
+
+    # Middle frame: weights e^-1/2, 1, e^-1/2 over positions 0, 10, 40, i.e. (10 + 40 * 0.60653) / 2.21306.
+    assert positions[1] == pytest.approx(15.4813, abs=1e-3)
+    assert positions[0] < 10.0 and positions[2] < 40.0  # edge frames pulled toward their neighbours, not lagging
+    assert metrics['texture_filter']['sigma'] == 1.0
+
+
+@needs_assets
+@pytest.mark.parametrize('sigma', [0.5, 2.0, 4.0])
+def test_a_sigma_sweep_only_changes_the_config(config, sigma):
+    config(f'TEXTURE_FILTER_SIGMA = {sigma}')
+
+    _, metrics = run_configured_predictor()
+
+    assert metrics['texture_filter']['sigma'] == sigma

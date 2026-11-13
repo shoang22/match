@@ -74,12 +74,20 @@ def load_sequence(opt, heldout_camera_ids, fixed_view_input_camera=None):
     return SequenceFrames(capture, heldout_camera_ids, fixed_view_input_camera)
 
 
-def build_predictor(runner) -> seq_predictors.FramePredictor:
-    """How each frame's Gaussian texture is predicted: one forward pass per frame."""
+@gin.configurable()
+def build_predictor(runner, texture_filter_sigma: float = None) -> seq_predictors.FramePredictor:
+    """How each frame's Gaussian texture is predicted: one forward pass per frame.
+
+    texture_filter_sigma: if set, the per-frame textures are smoothed over time by a centred Gaussian of
+      this width in frames (the temporal-filter baseline, match/sequence_eval/texture_filter.py); off by default.
+    """
     model = runner.get_unwrapped_model()
-    return seq_predictors.PerFramePredictor(
+    predictor = seq_predictors.PerFramePredictor(
         forward=lambda batch: model.mask_gaussians(
             runner.model(batch, func_name='forward_gaussians', return_tempeh_xyz=True)))
+    if texture_filter_sigma is not None:
+        predictor = seq_predictors.TextureFilterPredictor(predictor, sigma=texture_filter_sigma)
+    return predictor
 
 
 def load_batches(runner, sequence):
