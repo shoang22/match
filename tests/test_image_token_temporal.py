@@ -124,6 +124,21 @@ def test_gradient_checkpointing_keeps_the_image_token_sublayers_forward_and_grad
     torch.testing.assert_close(grads_ckpt[n], g, atol=1e-6, rtol=1e-4, msg=n)
 
 
+def test_a_per_frame_checkpoint_loads_into_the_ablation_with_fresh_image_token_sublayers(tmp_path):
+  from test_temporal_match_model import load_pretrained, save_checkpoint
+  per_frame = build(seed=1, temporal=False)
+  folder = save_checkpoint(per_frame.state_dict(), tmp_path / 'ckpt')
+  model = build(seed=2, **SWITCH_ON)
+  fresh = {k: v.clone() for k, v in model.state_dict().items() if k not in per_frame.state_dict()}
+  assert names_with(model, 'temporal_img') <= set(fresh)
+
+  load_pretrained(model, folder, strict=True)
+
+  loaded = model.state_dict()
+  for k, v in {**per_frame.state_dict(), **fresh}.items():
+    torch.testing.assert_close(loaded[k], v, atol=0, rtol=0, msg=k)
+
+
 @pytest.mark.parametrize('stage1_config, ablation_config, ablation_folder', [
     ('train_temporal_match.gin', 'train_temporal_match_image_tokens.gin', 'temporal_match_image_tokens'),
     ('train_temporal_match_smoketest.gin', 'train_temporal_match_image_tokens_smoketest.gin',
