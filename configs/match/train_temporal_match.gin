@@ -2,7 +2,7 @@
 # single GPU (RTX 4090, 24 GB). The spatial weights and the Sapiens encoder stay frozen; only the temporal sublayers, their norms
 # and the frame embeddings train. MATCH's losses apply to every frame of a clip and are summed over the clip.
 #
-# PYOPENGL_PLATFORM=egl PYTHONPATH=$(pwd) torchrun --standalone --nnodes=1 --nproc-per-node=1 scripts/match/train_match.py --gin_configs configs/match/train_temporal_match.gin
+# PYOPENGL_PLATFORM=egl PYTHONPATH=$(pwd) PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True torchrun --standalone --nnodes=1 --nproc-per-node=1 scripts/match/train_match.py --gin_configs configs/match/train_temporal_match.gin
 #
 # Needs data that is not on disk yet: the Ava-256 training subjects (configs/data/download_ava256_full.gin, with kinematic
 # tracking for the geometry losses) and their stride-1 TEMPEH predictions (configs/tempeh/save_predictions_train_stride1.yml, #34).
@@ -43,7 +43,7 @@ VAL_SEGMENT = 'SEN_a_good_morrow_to_you_my_boy'
 
 base_folder/join_strings.strings = [%BASE_FOLDER, '/', %NAME]
 condor_name/join_strings.strings = ['.', %NAME]
-cmd/join_strings.strings = ['PYTHONPATH=$(pwd) PYOPENGL_PLATFORM=egl torchrun --standalone --nnodes=1 --nproc-per-node=', %N_GPUS, ' scripts/match/train_match.py --gin_configs __CONFIG__']
+cmd/join_strings.strings = ['PYTHONPATH=$(pwd) PYOPENGL_PLATFORM=egl PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True torchrun --standalone --nnodes=1 --nproc-per-node=', %N_GPUS, ' scripts/match/train_match.py --gin_configs __CONFIG__']
 
 Options:
   base_folder = @base_folder/join_strings()
