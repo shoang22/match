@@ -1,0 +1,51 @@
+# PYTHONPATH=$(pwd) PYOPENGL_PLATFORM=egl conda run -n match --no-capture-output python condor/run.py configs/tempeh/save_predictions_background1.yml
+#
+# TEMPEH coarse meshes and per-camera UV maps for all 30 frames of `background 1`: save_predictions_calibrated.yml with
+# nframes -1, the interim Sapiens masks and its own out_dir. Input to the flicker-only sequence evaluation
+# (configs/match/eval_sequence_background1_flicker.gin) and to the `background 1` pilot (#36).
+#
+# Needs:
+#   - data/captures/background 1: the capture folder (images/frame{FFFFFF}_cam{CCC}.png + opencv_ba.txt), e.g. a symlink.
+#   - data/captures/masks_sapiens/background 1: interim Sapiens masks, made with the README's "Mask folder" step:
+#       conda run -n sapiens_lite python scripts/sapiens/capture_masks.py "data/captures/background 1" \
+#         "data/captures/masks_sapiens/background 1" --contact-sheet-frame 0
+#
+# Output: ${out_dir}/calibrated/background 1/background 1/<frame 000000..000029>/{verts.npy, uv_cam<0..11>.png, vis.jpg}.
+# Point MATCH's uv_directory and coarse_mesh_directory at ${out_dir}/calibrated.
+
+name: save_predictions-background1
+data_dir: data/captures/background 1
+mask_dir: data/captures/masks_sapiens/background 1
+out_dir: data/tempeh_predictions/background_1
+nframes: -1                                    # all 30 frames
+frame_stride: 1
+script: scripts/tempeh/save_predictions.py
+tempeh_config: assets/pretrained_models/tempeh/config.json
+arguments: "--config-filename ${tempeh_config} \
+            --datasets '[{\"type\": \"calibrated\", \
+                          \"root_path\": \"${data_dir}\", \
+                          \"mask_directory\": \"${mask_dir}\", \
+                          \"camera_angles\": [[0,0], [0, -15], [20,0], [20, 36], [20, -15], [-20,0], [-20, 36], [-20, -15], [40,-5], [40, 25], [-40,-5], [-40, 25]], \
+                          \"height\": 256, \"width\": 167, \
+                          \"nframes\": ${nframes}, \"frame_stride\": ${frame_stride}}]' \
+            --outpath \"${out_dir}\" \
+            --uv-out-height 786 \
+            --uv-out-width 512 \
+            --uv-n-samples -1"
+
+
+# condor configs
+CondorParameters:
+  name: ${name}
+  batch_name: ${name}
+  cmd: 'python ${script} ${arguments}'
+  requirements: '(TARGET.CUDACapability >= 8.0)'
+  base_dir: ${out_dir}
+  request_gpus: 1
+  request_cpus: 16
+  request_memory: 64_000
+  request_disk: 50G
+  backup_excludepatterns: ['third_party']
+  environment: {'CC': 'gcc-11', 'CXX':'g++-11'}
+  njobs: 1
+  retries: 0
