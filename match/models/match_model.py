@@ -486,12 +486,14 @@ class MatchModel(nn.Module):
       data: Dict[str, Tensor],
       dtype: torch.dtype = torch.float32,
       return_masked_gaussians: bool = False,
+      return_tempeh_xyz: bool = False,
   ):
     """Args:
 
       data: A dictionary of data: a batch of frames (image (B, V, 3, H, W)) or a batch of clips with a
         time axis after the batch axis (image (B, T, V, 3, H, W); see `MatchBatch.fold_clip`).
       dtype: The data type to use.
+      return_tempeh_xyz: also return the TEMPEH part of each texel's position under 'tempeh_xyz'.
 
     returns:
       dict with keys (a clip batch gets a time axis after the batch axis, (B, T, 1, C, H, W)):
@@ -501,23 +503,26 @@ class MatchModel(nn.Module):
       - rotation: (B, 1, 4, H, W)
       - opacity: (B, 1, 1, H, W)
       - uv: (B, 1, 3, H, W)
+      - tempeh_xyz: (B, 1, 3, H, W), only if return_tempeh_xyz. The TEMPEH coarse surface point at each texel,
+        which xyz adds the predicted offset to (xyz - tempeh_xyz is the offset). Zeros without skip_connection.
       and, with return_masked_gaussians, the masked Gaussians ((B, (T,) 1, C, L, 1)).
     """
     data = data_util.MatchBatch(data)
     if not data.is_clip:
-      gaussian_features = self._forward_frame_gaussians(data, dtype, clip_len=1)
+      gaussian_features = self._forward_frame_gaussians(data, dtype, 1, return_tempeh_xyz)
       if return_masked_gaussians:
         return gaussian_features, self.mask_gaussians(gaussian_features)
       return gaussian_features
 
     frames, clip_len = data.fold_clip()
-    gaussian_features = self._forward_frame_gaussians(frames, dtype, clip_len=clip_len)
+    gaussian_features = self._forward_frame_gaussians(frames, dtype, clip_len, return_tempeh_xyz)
     clip_gaussian_features = data_util.unfold_clip(gaussian_features, clip_len)
     if return_masked_gaussians:
       return clip_gaussian_features, data_util.unfold_clip(self.mask_gaussians(gaussian_features), clip_len)
     return clip_gaussian_features
 
-  def _forward_frame_gaussians(self, data: data_util.MatchBatch, dtype: torch.dtype, clip_len: int):
+  def _forward_frame_gaussians(self, data: data_util.MatchBatch, dtype: torch.dtype, clip_len: int,
+                               return_tempeh_xyz: bool = False):
     """Gaussian textures (B * T, 1, C, H, W) for a batch of frames in which every `clip_len` consecutive
     samples are the frames of one clip."""
     b, v, _, h, w = data["uv"].shape
@@ -563,7 +568,13 @@ class MatchModel(nn.Module):
         clip_len=clip_len,
     )
     x_uv = self.ln_out(x_uv)
-    return self._uv_tokens_to_gaussian_feature_textures(x_uv, uv_xyz=uv_xyz, uv_rgb=uv_rgb)
+    gaussian_features = self._uv_tokens_to_gaussian_feature_textures(x_uv, uv_xyz=uv_xyz, uv_rgb=uv_rgb)
+    if return_tempeh_xyz:
+      xyz = gaussian_features['xyz']
+      gaussian_features['tempeh_xyz'] = (
+          einops.rearrange(uv_xyz, 'b c h w -> b 1 c h w').to(xyz.dtype) if self.skip_connection
+          else torch.zeros_like(xyz))
+    return gaussian_features
 
   def forward(self, *args, func_name="compute_loss", **kwargs):
     # To support different forward functions for models wrapped by `accelerate`

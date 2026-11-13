@@ -102,10 +102,11 @@ def test_at_init_each_frame_of_a_clip_equals_per_frame_match(frames):
   temporal = build(temporal=True, clip_length=3)
   per_frame = per_frame_twin(temporal)
 
-  clip_out = temporal.forward_gaussians(as_clip(frames))
+  clip_out = temporal.forward_gaussians(as_clip(frames), return_tempeh_xyz=True)
 
   for t, frame in enumerate(frames):
-    expected = per_frame.forward_gaussians(as_batch(frame))
+    expected = per_frame.forward_gaussians(as_batch(frame), return_tempeh_xyz=True)
+    assert 'tempeh_xyz' in expected
     for k, v in expected.items():
       assert clip_out[k].shape == (1, len(frames)) + v.shape[1:], k
       torch.testing.assert_close(clip_out[k][:, t], v, atol=ATOL, rtol=0, msg=f'{k} frame {t}')

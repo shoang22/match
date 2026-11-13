@@ -45,6 +45,13 @@ TEMPORAL_SCORES = {
     'flow_aligned_error': TemporalScore(_flow_aligned_error, 'Flow-aligned error (lower is better)'),
 }
 TEMPORAL_SOURCES = ('prediction', 'real')
+# Sources of the geometric jitter: the parts of each texel's predicted position, final = TEMPEH part + offset.
+JITTER_SOURCES = {
+    'tempeh': 'TEMPEH part (coarse surface at the texel)',
+    'offset': 'MATCH offset (final minus TEMPEH part)',
+    'final': 'Final position',
+}
+MM_PER_WORLD_UNIT = 1000  # the model's world coordinates are metres (datasets' SCALE_FACTOR converts mm to m)
 N_WORST_FRAMES = 3
 
 
@@ -156,3 +163,44 @@ class TemporalMetrics:
             for source, by_score in scores.items()
         }
         return {'temporal': {'camera': self.fixed_view_camera, 'per_pair': per_pair, 'summary': summary}}
+
+
+class GeometricJitter:
+    """Frame-to-frame jitter of every texel's predicted position, split into the TEMPEH part and MATCH's offset.
+
+    A texel's final position is the TEMPEH surface point at the texel ('tempeh_xyz' in the Gaussians, see
+    MatchModel.forward_gaussians(return_tempeh_xyz=True)) plus the predicted offset. For each of the three,
+    the jitter of consecutive frames (t-1, t, t+1) is the mean over the texels of |x[t+1] - 2 x[t] + x[t-1]|
+    in mm (metric_util.geometric_jitter). The Gaussians are masked to the UV grid's valid texels, so every
+    texel they hold counts. Only the last three frames are kept, on the CPU.
+
+    JSON section 'jitter':
+      'units': 'mm'
+      'per_frame': {frame_id: {'previous_frame', 'next_frame', 'tempeh', 'offset', 'final'}}, keyed by the
+        middle frame of each triple of consecutive source frames
+      'summary': {'tempeh'|'offset'|'final': {'mean', 'worst_frames'}}, highest jitter first
+    """
+
+    def __init__(self):
+        self.window = []  # [(frame_id, {source: (3, L) positions in mm})], the last three frames
+        self.per_frame = {}
+
+    def add_frame(self, ctx):
+        final = ctx.gaussians['xyz'][0, 0, :, :, 0].detach().float().cpu() * MM_PER_WORLD_UNIT
+        tempeh = ctx.gaussians['tempeh_xyz'][0, 0, :, :, 0].detach().float().cpu() * MM_PER_WORLD_UNIT
+        self.window = self.window[-2:] + [(ctx.frame_id, {'tempeh': tempeh, 'offset': final - tempeh,
+                                                          'final': final})]
+        if len(self.window) < 3:
+            return
+        (previous, _), (frame, _), (following, _) = self.window
+        entry = {'previous_frame': previous, 'next_frame': following}
+        for source in JITTER_SOURCES:
+            (entry[source],) = metric_util.geometric_jitter(torch.stack([p[source] for _, p in self.window]))
+        self.per_frame[frame] = entry
+
+    def finish(self):
+        summary = {
+            source: summarize({f: e[source] for f, e in self.per_frame.items()}, higher_is_better=False)
+            for source in JITTER_SOURCES
+        }
+        return {'jitter': {'units': 'mm', 'per_frame': self.per_frame, 'summary': summary}}
