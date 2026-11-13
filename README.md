@@ -203,6 +203,8 @@ We demonstrate how a set of registered Gaussian splat textures of a person predi
 ## Training MATCH
 Coming soon...
 
+Gradient clipping now applies to every training run, per-frame MATCH included. Before, the runner clipped the gradient norm over a parameter iterator the optimizer had already used up, so training silently never clipped. It now clips to `max_grad_norm` (default 1.0) over the trainable parameters, so per-frame runs, resumed pretrained runs too, can train differently than before.
+
 ### Single-GPU smoke test
 `configs/match/train_match_smoketest.gin` runs 50 training steps (with evals at steps 25 and 50) on the quickstart data to check that the training loop works. It is not a real training run. It was tested on a single RTX 4090 (24GB) under WSL2, peaking at ~17GB of GPU memory.
 
