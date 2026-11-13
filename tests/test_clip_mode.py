@@ -47,3 +47,22 @@ def test_a_clip_stacks_frames_at_the_clip_stride_on_a_time_axis(tmp_path):
     clip = dataset[1]
     assert clip['frame'] == ['000001', '000003']
     assert tuple(clip['image'].shape) == (2, NUM_CAMERAS, 3, CROP_HEIGHT, CROP_WIDTH)
+
+
+# Six of the 12 target angles, so a frame that lacks one camera still has enough cameras. The rig's camera 0
+# (az 1.0, el 0.2) is the one nearest to the first angle, [0, 0].
+SIX_ANGLES = synth.AVA_CAMERA_ANGLES[:6]
+
+
+def test_every_frame_of_a_clip_uses_the_same_cameras_even_when_one_frame_lacks_one(tmp_path):
+    capture = synth.write_capture(tmp_path / 'capture', tmp_path / 'masks', nframes=2, missing_images={(1, 0)})
+    per_frame = build_calibrated(capture, camera_angles=SIX_ANGLES)
+    # Single frames pick camera 0 where it exists and a substitute where it doesn't
+    assert 0 in per_frame[0]['camera'].tolist()
+    assert 0 not in per_frame[1]['camera'].tolist()
+
+    clip = build_calibrated(capture, camera_angles=SIX_ANGLES, clip_length=2)[0]
+    assert clip['frame'] == ['000000', '000001']
+    assert clip['camera'].shape == (2, 6)
+    assert clip['camera'][0].tolist() == clip['camera'][1].tolist()
+    assert 0 not in clip['camera'][0].tolist()
