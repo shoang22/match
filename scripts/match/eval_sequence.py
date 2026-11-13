@@ -89,25 +89,18 @@ def build_predictor(runner, texture_filter_sigma: float = None, inference_mode: 
       this width in frames (the temporal-filter baseline, match/sequence_eval/texture_filter.py); off by
       default. Per-frame inference of a per-frame checkpoint only.
     """
-    opt, model = runner.opt, runner.get_unwrapped_model()
-    mode = inference_mode or ('sliding' if opt.temporal else 'per_frame')
+    opt = runner.opt
+    mode = seq_predictors.resolve_inference_mode(opt.temporal, inference_mode)
     if texture_filter_sigma is not None and (opt.temporal or mode != 'per_frame'):
         raise ValueError('The texture filter is the baseline for per-frame MATCH: it cannot run on a temporal '
                          f'checkpoint or with windowed inference (temporal={opt.temporal}, inference_mode={mode!r})')
     if mode == 'per_frame':
-        predictor = seq_predictors.PerFramePredictor(
-            forward=lambda batch: model.mask_gaussians(
-                runner.model(batch, func_name='forward_gaussians', return_tempeh_xyz=True)))
+        predictor = seq_predictors.PerFramePredictor(forward=seq_predictors.frame_forward(runner))
         if texture_filter_sigma is not None:
             predictor = seq_predictors.TextureFilterPredictor(predictor, sigma=texture_filter_sigma)
         return predictor
-
-    def forward_clip(clip):
-        clip = data_util.MatchBatch(clip).to_device(runner.device)
-        _, masked = runner.model(clip, func_name='forward_gaussians', return_masked_gaussians=True,
-                                 return_tempeh_xyz=True)
-        return masked
-    return seq_predictors.WindowedPredictor(forward_clip, clip_length=opt.clip_length, mode=mode)
+    return seq_predictors.WindowedPredictor(seq_predictors.clip_forward(runner), clip_length=opt.clip_length,
+                                            mode=mode)
 
 
 def load_batches(runner, sequence):
