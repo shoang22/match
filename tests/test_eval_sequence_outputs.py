@@ -18,6 +18,9 @@ from tce049 import FIXED_VIEW_CAMERA, FRAME_IDS_PER_SECOND, INPUT_CAMERA_IDS, RE
 IMAGE_METRICS = {'psnr': True, 'ssim': True, 'lpips': False}
 TEMPORAL_SCORES = ['raw_flicker', 'flow_aligned_error']  # lower is better
 TEMPORAL_SOURCES = ['prediction', 'real']
+JITTER_SOURCES = ['tempeh', 'offset', 'final']  # final position = TEMPEH part + offset; lower is better
+# Raw TEMPEH per-vertex jitter on this segment is 1.2 to 5.9 mm per triple (mean 2.86 mm, from verts.npy).
+TEMPEH_JITTER_RANGE_MM = (0.5, 20.0)
 N_WORST_FRAMES = 3
 
 
@@ -116,6 +119,36 @@ def test_temporal_summary_has_the_mean_and_worst_frames(run, metrics):
         for score in TEMPORAL_SCORES:
             values = {f: temporal['per_pair'][f][source][score] for f in run.frames[1:]}
             assert_summary(temporal['summary'][source][score], values, higher_is_better=False)
+
+
+def test_jitter_is_finite_for_every_source_on_every_triple_of_frames(run, metrics):
+    jitter = metrics['jitter']
+    assert jitter['units'] == 'mm'
+    # each triple of consecutive source frames is keyed by its middle frame
+    assert list(jitter['per_frame']) == run.frames[1:-1]
+    for previous, frame, following in zip(run.frames, run.frames[1:], run.frames[2:]):
+        entry = jitter['per_frame'][frame]
+        assert (entry['previous_frame'], entry['next_frame']) == (previous, following)
+        assert all(is_finite_float(entry[s]) and entry[s] >= 0 for s in JITTER_SOURCES), entry
+
+
+def test_jitter_summary_has_the_mean_and_worst_frames(run, metrics):
+    jitter = metrics['jitter']
+    for source in JITTER_SOURCES:
+        values = {f: jitter['per_frame'][f][source] for f in run.frames[1:-1]}
+        assert_summary(jitter['summary'][source], values, higher_is_better=False)
+
+
+def test_final_jitter_is_at_most_the_tempeh_plus_the_offset_jitter(metrics):
+    # Per texel |d2 final| <= |d2 tempeh| + |d2 offset|, so the means obey it too, if offset = final - tempeh.
+    for frame, entry in metrics['jitter']['per_frame'].items():
+        assert entry['final'] <= entry['tempeh'] + entry['offset'] + 1e-3, (frame, entry)
+
+
+def test_tempeh_jitter_is_in_millimetres(metrics):
+    low, high = TEMPEH_JITTER_RANGE_MM
+    for frame, entry in metrics['jitter']['per_frame'].items():
+        assert low <= entry['tempeh'] <= high, (frame, entry)
 
 
 def test_pretrained_model_with_the_12_standard_inputs_on_every_frame(run, metrics):

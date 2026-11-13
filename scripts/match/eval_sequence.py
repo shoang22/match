@@ -47,7 +47,7 @@ def build_panels(plan, opt) -> list[seq_panels.Panel]:
 
 def build_metric_collectors() -> list[seq_metrics.MetricCollector]:
     # RAFT for the temporal metrics runs on the CPU (~2.5 s per pair): the model still holds the GPU.
-    return [seq_metrics.ImageMetrics(), seq_metrics.TemporalMetrics(device='cpu')]
+    return [seq_metrics.ImageMetrics(), seq_metrics.TemporalMetrics(device='cpu'), seq_metrics.GeometricJitter()]
 
 
 def load_sequence(opt, heldout_camera_ids):
@@ -81,7 +81,7 @@ def run_frames(runner, plan, panels, collectors, video, preview):
                 raise FrameLoadError(f'Expected frame {sequence.frame_ids[i]} at position {i}, got {frame}')
             input_cameras[frame] = [str(c) for c in batch['camera'][0].tolist()]
 
-            gaussians = model.mask_gaussians(runner.model(batch, func_name='forward_gaussians'))
+            gaussians = model.mask_gaussians(runner.model(batch, func_name='forward_gaussians', return_tempeh_xyz=True))
             ctx = build_frame_context(runner, batch, gaussians, plan, frame_index=i)
             for collector in collectors:
                 collector.add_frame(ctx)
