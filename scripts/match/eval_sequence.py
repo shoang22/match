@@ -1,5 +1,6 @@
-"""Sequence evaluation of MATCH: an independent forward pass of the pretrained model on every frame of an
-Ava-256 segment, rendered from held-out cameras that are never inputs.
+"""Sequence evaluation of MATCH: a prediction for every frame of an Ava-256 segment, rendered from held-out
+cameras that are never inputs. Per-frame MATCH runs an independent forward pass per frame; a temporal
+checkpoint runs on windows of frames and keeps each frame from one window (sliding or block mode).
 
 Writes to `out_dir`: a 24 fps grid video of labelled panels (each source frame held for its true
 duration), a faster preview of the grid (each source frame shown once, at preview_fps), a metrics JSON
