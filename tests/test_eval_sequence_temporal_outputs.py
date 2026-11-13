@@ -4,12 +4,13 @@ initialization scores like per-frame MATCH.
 Runs checked (each test skips until its runs have been done, see eval_sequence_runs.py):
 - the per-frame smoke run (configs/match/eval_sequence_smoketest.gin, EVAL_SEQUENCE_SMOKE_DIR),
 - the temporal smoke run (configs/match/eval_sequence_smoketest_temporal.gin, EVAL_SEQUENCE_TEMPORAL_SMOKE_DIR):
-  temporal MATCH at initialization, sliding windows; the 3 smoke frames are one window.
-Everything a per-frame run writes is checked on the temporal run in test_eval_sequence_outputs.py.
+  temporal MATCH at initialization, sliding windows; the 3 smoke frames are one window,
+- the same on 6 frames in sliding and in block mode (EVAL_SEQUENCE_TEMPORAL_SLIDING6_DIR, ..._BLOCK6_DIR).
+Everything a per-frame run writes is checked on the temporal runs in test_eval_sequence_outputs.py.
 """
 import pytest
 
-from eval_sequence_runs import SMOKE, TEMPORAL_SMOKE, load_metrics
+from eval_sequence_runs import SMOKE, TEMPORAL_BLOCK6, TEMPORAL_SLIDING6, TEMPORAL_SMOKE, load_metrics
 
 # How far temporal MATCH at initialization may score from per-frame MATCH. At initialization the temporal sublayers
 # are exact no-ops, so the only differences are GPU nondeterminism and fp16 numerics of running the 3 frames as one
@@ -55,6 +56,23 @@ def test_a_temporal_run_records_its_inference_mode_and_each_frames_window_start_
         first: {'window_start': 0, 'window_start_frame': first, 'slot': 0},
         second: {'window_start': 0, 'window_start_frame': first, 'slot': 1},
         third: {'window_start': 0, 'window_start_frame': first, 'slot': 2}}
+
+
+@pytest.mark.parametrize('run, n_windows, starts, slots', [
+    # one frame before to two after, shifted inward at both ends: windows at frames 0, 1 and 2
+    (TEMPORAL_SLIDING6, 3, [0, 0, 1, 2, 2, 2], [0, 1, 1, 1, 2, 3]),
+    # frames 0-3, then the last block shifted inward to frames 2-5, which keeps only frames 4 and 5
+    (TEMPORAL_BLOCK6, 2, [0, 0, 0, 0, 2, 2], [0, 1, 2, 3, 2, 3]),
+], ids=lambda value: value.name if hasattr(value, 'name') else None)
+def test_a_six_frame_run_records_the_window_and_slot_of_every_frame(run, n_windows, starts, slots):
+    inference = load_metrics(run)['inference']
+    frames = run.frames
+
+    assert inference['mode'] == run.name.removeprefix('temporal_').removesuffix('6')
+    assert (inference['window_length'], inference['n_windows']) == (4, n_windows)
+    assert inference['per_frame'] == {
+        frame: {'window_start': start, 'window_start_frame': frames[start], 'slot': slot}
+        for frame, start, slot in zip(frames, starts, slots)}
 
 
 def test_a_per_frame_run_has_no_inference_section(per_frame):

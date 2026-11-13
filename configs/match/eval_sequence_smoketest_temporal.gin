@@ -3,6 +3,10 @@
 # pretrained per-frame checkpoint loaded into the temporal model with fresh (no-op) temporal sublayers, in sliding mode. 3 frames are fewer
 # than the window of 4, so the model runs once, on a clip of all 3 frames. Its scores should equal the per-frame smoke run's within the
 # fp16 batch-size noise (tests/test_eval_sequence_temporal_outputs.py).
+# Several windows (6 frames), in each mode: append to the command
+#   --gin_bindings "NFRAMES = 6" --gin_bindings "OUT_DIR = 'experiments/match/eval_sequence/smoketest_temporal_sliding6'"
+#   --gin_bindings "NFRAMES = 6" --gin_bindings "INFERENCE_MODE = 'block'" --gin_bindings "OUT_DIR = 'experiments/match/eval_sequence/smoketest_temporal_block6'"
+# A window of 4 frames x 12 views peaks at ~22 GiB with nothing else on the GPU (#35 notes in spec-24 FINDINGS.md).
 # Check the outputs afterwards: conda run -n match python -m pytest tests/test_eval_sequence_outputs.py tests/test_eval_sequence_temporal_outputs.py
 
 include 'configs/match/eval_sequence_smoketest.gin'
