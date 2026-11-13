@@ -664,11 +664,24 @@ def _checkpoint_clip_block(block: nn.Module, block_inputs: dict, context: Option
 
   The temporal sublayers (UV tokens, and image tokens in the ablation) need every frame of a clip, so each
   is checkpointed on the whole batch, one chunk of token positions at a time (TEMPORAL_CHUNK_POSITIONS): the
-  backward pass then recomputes one chunk's attention at a time. Everything after them (the spatial attention and MLP) treats each
-  sample on its own, so it is checkpointed one sample at a time: the backward pass then recomputes one
-  frame's spatial activations at a time instead of the whole clip's. The result is what the block computes
-  on the whole batch.
+  backward pass then recomputes one chunk's attention at a time. Everything after them (the spatial
+  attention and MLP) treats each sample on its own, so it is checkpointed one sample at a time: the backward
+  pass then recomputes one frame's spatial activations at a time instead of the whole clip's. The result is
+  what the block computes on the whole batch.
+
+  The spatial checkpoints keep the temporal sublayers' outputs until backward. For UV tokens that is small;
+  for image tokens (the ablation) it is one more clip-sized image tensor per block (~240 MiB at 12 views,
+  T=4). So with an image-token sublayer the whole block is checkpointed as well, which keeps only the block's
+  input; the backward pass then runs the block's forward once more before recomputing as above.
   """
+  if block.temporal_img is not None:
+    return torch.utils.checkpoint.checkpoint(
+        _run_clip_block_checkpointed, block, block_inputs, context, use_reentrant=False
+    )
+  return _run_clip_block_checkpointed(block, block_inputs, context)
+
+
+def _run_clip_block_checkpointed(block: nn.Module, block_inputs: dict, context: Optional[Tensor]):
   inputs = dict(block_inputs)
   clip_len, frame_embedding = inputs.pop("clip_len"), inputs.pop("frame_embedding")
   for key, temporal_attn in (("uv_tokens", block.temporal_uv), ("img_tokens", block.temporal_img)):
@@ -681,12 +694,19 @@ def _checkpoint_clip_block(block: nn.Module, block_inputs: dict, context: Option
           )
           for chunk in _position_chunks(tokens.shape[1])
       ], dim=1)
+  # Positional, not keyword, arguments: a checkpoint keeps keyword arguments as a plain python object, out of
+  # reach of an enclosing checkpoint, which then could not drop them.
+  keys = list(inputs)
+
+  def run_block_on_sample(*values):
+    return block(**dict(zip(keys, values)), context=context, clip_len=1, frame_embedding=None)
+
   n_samples = inputs["uv_tokens"].shape[0]
   outputs = [
       torch.utils.checkpoint.checkpoint(
-          block,
-          **{k: v[i:i + 1] if isinstance(v, Tensor) else v for k, v in inputs.items()},
-          context=context, clip_len=1, frame_embedding=None, use_reentrant=False,
+          run_block_on_sample,
+          *(v[i:i + 1] if isinstance(v, Tensor) else v for v in inputs.values()),
+          use_reentrant=False,
       )
       for i in range(n_samples)
   ]
