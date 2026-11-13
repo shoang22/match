@@ -16,7 +16,7 @@ import torch
 if not Path('assets').exists():
     pytest.skip('assets/ is missing; see the worktree section of CLAUDE.md', allow_module_level=True)
 
-from safetensors.torch import save_file  # noqa: E402
+from safetensors.torch import load_file, save_file  # noqa: E402
 
 from match.models.match_model import MatchModel, checkpoint_allow_missing  # noqa: E402
 from match.options import Options  # noqa: E402
@@ -223,3 +223,69 @@ def test_a_missing_non_temporal_key_fails_the_temporal_load(tmp_path, strict):
 
   with pytest.raises(Exception, match='out_xyz.weight'):
     load_pretrained(build(temporal=True, clip_len=3), folder, strict)
+
+
+PRETRAINED = Path('assets/pretrained_models/match/uv_res_1024')
+
+
+class SapiensStub:
+  """Stands in for the 4.6 GB Sapiens torchscript, which is not an nn.Module and holds no checkpoint keys."""
+  C = 1536
+
+  def __init__(self, *args, **kwargs):
+    pass
+
+  def to(self, device):
+    return self
+
+
+@pytest.fixture
+def pretrained_options(monkeypatch):
+  import gin
+  from match.models import match_model
+  from match.utils import gin_util  # noqa: F401  registers join_strings for config_0.gin
+
+  monkeypatch.setattr(match_model, 'SapiensEncoder', SapiensStub)
+  gin.clear_config()
+  gin.parse_config_files_and_bindings([str(PRETRAINED / 'config_0.gin')], None, skip_unknown=True)
+  try:
+    yield Options()
+  finally:
+    gin.clear_config()
+
+
+@pytest.mark.skipif(not PRETRAINED.exists(), reason=f'needs {PRETRAINED}')
+def test_the_pretrained_checkpoint_loads_into_temporal_match(pretrained_options):
+  opt = pretrained_options
+  assert opt.load_pretrained_model_strict is False  # the shipped config; the temporal load is strict anyway
+  opt.temporal, opt.clip_len = True, 4
+  model = MatchModel(opt)
+  folder = general_util.get_ckpt_path(str(PRETRAINED / 'checkpoints'), -1)
+
+  general_util.load_ckpt(folder, model, strict=opt.load_pretrained_model_strict,
+                         allow_missing=checkpoint_allow_missing(opt))
+
+  checkpoint = load_file(f'{folder}/model.safetensors')
+  loaded = model.state_dict()
+  assert len(checkpoint) == 184
+  for k, v in checkpoint.items():
+    # template_triangle_uvs_orig is float64 in the checkpoint and float32 in the model, as before
+    torch.testing.assert_close(loaded[k], v, atol=0, rtol=0, check_dtype=False, msg=k)
+  fresh = set(loaded) - set(checkpoint)
+  assert fresh and all('temporal' in k for k in fresh)
+  for block in range(2 * opt.num_blocks):
+    assert (loaded[f'transformer.blocks.{block}.temporal_uv.attn.wo.weight'] == 0).all()
+  assert (loaded['transformer.temporal_frame_embedding'] == 0).all()
+
+
+@pytest.mark.skipif(not PRETRAINED.exists(), reason=f'needs {PRETRAINED}')
+def test_with_the_switch_off_the_model_has_exactly_the_pretrained_checkpoints_keys(pretrained_options):
+  opt = pretrained_options
+  assert opt.temporal is False
+  model = MatchModel(opt)
+  folder = general_util.get_ckpt_path(str(PRETRAINED / 'checkpoints'), -1)
+
+  general_util.load_ckpt(folder, model, strict=True, allow_missing=checkpoint_allow_missing(opt))
+
+  assert set(model.state_dict()) == set(load_file(f'{folder}/model.safetensors'))
+  assert all(p.requires_grad for p in model.parameters())
