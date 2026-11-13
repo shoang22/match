@@ -472,11 +472,13 @@ class MatchModel(nn.Module):
       data: Dict[str, Tensor],
       dtype: torch.dtype = torch.float32,
       return_masked_gaussians: bool = False,
+      return_tempeh_xyz: bool = False,
   ):
     """Args:
 
       data: A dictionary of data.
       dtype: The data type to use.
+      return_tempeh_xyz: also return the TEMPEH part of each texel's position under 'tempeh_xyz'.
 
     returns:
       dict with keys:
@@ -486,6 +488,8 @@ class MatchModel(nn.Module):
       - rotation: (B, 1, 3, H, W)
       - opacity: (B, 1, 1, H, W)
       - uv: (B, 1, 3, H, W)
+      - tempeh_xyz: (B, 1, 3, H, W), only if return_tempeh_xyz. The TEMPEH coarse surface point at each texel,
+        which xyz adds the predicted offset to (xyz - tempeh_xyz is the offset). Zeros without skip_connection.
     """
     b, v, _, h, w = data["uv"].shape
     data = data_util.MatchBatch(data)
@@ -532,6 +536,11 @@ class MatchModel(nn.Module):
     )
     x_uv = self.ln_out(x_uv)
     gaussian_features = self._uv_tokens_to_gaussian_feature_textures(x_uv, uv_xyz=uv_xyz, uv_rgb=uv_rgb)
+    if return_tempeh_xyz:
+      xyz = gaussian_features['xyz']
+      gaussian_features['tempeh_xyz'] = (
+          einops.rearrange(uv_xyz, 'b c h w -> b 1 c h w').to(xyz.dtype) if self.skip_connection
+          else torch.zeros_like(xyz))
 
 
     if return_masked_gaussians:

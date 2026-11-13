@@ -49,7 +49,7 @@ def build_panels(plan, opt) -> list[seq_panels.Panel]:
 
 def build_metric_collectors() -> list[seq_metrics.MetricCollector]:
     # RAFT for the temporal metrics runs on the CPU (~2.5 s per pair): the model still holds the GPU.
-    return [seq_metrics.ImageMetrics(), seq_metrics.TemporalMetrics(device='cpu')]
+    return [seq_metrics.ImageMetrics(), seq_metrics.TemporalMetrics(device='cpu'), seq_metrics.GeometricJitter()]
 
 
 def load_sequence(opt, heldout_camera_ids):
@@ -73,7 +73,8 @@ def build_predictor(runner, texture_filter_sigma: float = None) -> seq_predictor
     """
     model = runner.get_unwrapped_model()
     predictor = seq_predictors.PerFramePredictor(
-        forward=lambda batch: model.mask_gaussians(runner.model(batch, func_name='forward_gaussians')))
+        forward=lambda batch: model.mask_gaussians(
+            runner.model(batch, func_name='forward_gaussians', return_tempeh_xyz=True)))
     if texture_filter_sigma is not None:
         predictor = seq_predictors.TextureFilterPredictor(predictor, sigma=texture_filter_sigma)
     return predictor

@@ -301,3 +301,25 @@ def flow_aligned_error(frames: torch.Tensor, masks: torch.Tensor, flow=None,
     warped_mask = _warp(masks[:-1].float(), backward) > 0.999
     valid = masks[1:] & warped_mask & _consistent(forward, backward) & ~_motion_boundary(backward)
     return _scores([_masked_mean_abs(frames[i + 1], warped[i], valid[i]) for i in range(n)])
+
+
+# --- Geometric jitter ---------------------------------------------------------
+
+
+def geometric_jitter(positions: torch.Tensor, valid: torch.Tensor = None) -> list:
+    """Size of the second difference of each texel's position, averaged over the valid texels.
+
+    positions: (T, 3, N) per-texel positions over T consecutive frames.
+    valid: (N,) bool, the texels to average over; all of them if None.
+    Returns T - 2 floats, entry t for frames (t, t + 1, t + 2), i.e. keyed by the middle frame t + 1:
+    the mean over valid texels of |x[t+2] - 2 x[t+1] + x[t]|, in the units of `positions`. Constant and
+    linear motion score 0. With no valid texels an entry is nan; with T < 3 the list is empty.
+    """
+    if positions.dim() != 3 or positions.shape[1] != 3:
+        raise ValueError(f'expected positions (T, 3, N), got {tuple(positions.shape)}')
+    if valid is not None:
+        positions = positions[:, :, valid.to(positions.device)]
+    if positions.shape[-1] == 0:
+        return [math.nan] * max(positions.shape[0] - 2, 0)
+    second_diff = positions[2:] - 2 * positions[1:-1] + positions[:-2]  # (T-2, 3, N)
+    return second_diff.norm(dim=1).mean(dim=1).tolist()

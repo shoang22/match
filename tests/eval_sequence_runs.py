@@ -23,11 +23,11 @@ GRID_COLS = 2
 VIDEO_W, VIDEO_H = GRID_COLS * PANEL_W, 2 * (LABEL_H + PANEL_H)  # 2x2 grid of labelled panels
 PANELS = [f'MATCH prediction (cam {FIXED_VIEW_CAMERA})', f'Real held-out (cam {FIXED_VIEW_CAMERA})',
           f'TEMPEH coarse mesh (cam {FIXED_VIEW_CAMERA})', 'Orbit']
-PLOTS = ['plot_image_metrics.png', 'plot_temporal_metrics.png']
+PLOTS = ['plot_image_metrics.png', 'plot_temporal_metrics.png', 'plot_geometric_jitter.png']
 FRAME_SPACING_S = 12 / FRAME_IDS_PER_SECOND  # between consecutive 4TB frames
 # Top-level sections of metrics.json. An output folder whose metrics.json lacks one was written by older code.
 METRICS_SECTIONS = ['model', 'subject', 'segments', 'frames', 'heldout_cameras', 'fixed_view_camera', 'input_cameras',
-                    'video', 'output_frames', 'preview', 'per_frame', 'summary', 'temporal', 'plots']
+                    'video', 'output_frames', 'preview', 'per_frame', 'summary', 'temporal', 'jitter', 'plots']
 
 
 @dataclass(frozen=True)
