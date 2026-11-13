@@ -1,7 +1,8 @@
-# Single-GPU smoke test of temporal MATCH clip training: a few clip steps, one validation pass and one checkpoint. It checks that
-# the training loop runs on clips; it is not a real training.
-#
+# Single-GPU smoke test of temporal MATCH clip training: a few clip steps, one validation pass and one checkpoint.
 # PYOPENGL_PLATFORM=egl PYTHONPATH=$(pwd) PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True torchrun --standalone --nnodes=1 --nproc-per-node=1 scripts/match/train_match.py --gin_configs configs/match/train_temporal_match_smoketest.gin
+#
+# It checks that the training loop runs on clips; it is not a real training. Delete the output folder before rerunning (a run
+# resumes its own checkpoint).
 #
 # Everything but the data is configs/match/train_temporal_match.gin (T=4, 12 input and 12 render views, gradient checkpointing,
 # spatial weights and Sapiens frozen, pretrained weights). No Ava-256 training subject is on disk, so it TRAINS ON A HELD-OUT

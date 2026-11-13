@@ -1,10 +1,10 @@
-# Per-frame MATCH trained on clips with the temporal trajectory loss and no temporal attention (#38): the 2x2 cell that tests whether
-# learned smoothing alone is enough (#42). configs/match/train_temporal_match_temporal_loss.gin without the temporal sublayers:
-# only the offset head trains, at a lower learning rate (configs/match/per_frame_match_on_clips.gin).
-#
+# Per-frame MATCH trained on clips with the temporal trajectory loss and no temporal attention (#38), a 2x2 cell (#42).
 # PYOPENGL_PLATFORM=egl PYTHONPATH=$(pwd) PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True torchrun --standalone --nnodes=1 --nproc-per-node=1 scripts/match/train_match.py --gin_configs configs/match/train_match_clips_temporal_loss.gin
 #
-# Same data needs as the stage-1 config. The smoke test on data that is on disk: configs/match/train_match_clips_temporal_loss_smoketest.gin.
+# The cell tests whether learned smoothing alone is enough: configs/match/train_temporal_match_temporal_loss.gin without the
+# temporal sublayers, where only the offset head trains, at a lower learning rate (configs/match/per_frame_match_on_clips.gin).
+# Same data needs as the stage-1 config. The smoke test on data that is on disk:
+# configs/match/train_match_clips_temporal_loss_smoketest.gin.
 
 include 'configs/match/train_temporal_match.gin'
 include 'configs/match/per_frame_match_on_clips.gin'
