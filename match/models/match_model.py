@@ -342,7 +342,13 @@ class MatchModel(nn.Module):
     # sapiens feature extraction
     sapiens_features = None
     if self.use_sapiens_features:
-      sapiens_features = self.sapiens_encoder(einops.rearrange(input_images*.5 + .5, 'b v c h w -> (b v) c h w')) 
+      sapiens_inputs = einops.rearrange(input_images*.5 + .5, 'b v c h w -> (b v) c h w')
+      # one sample at a time when its views fill whole Sapiens tile grids (the tiles are then the same as for
+      # the whole batch), to bound the frozen encoder's activation memory for clips folded into the batch
+      tiles = (self.sapiens_encoder.prediction_tiles_sqrt or 1)**2
+      chunk = V if V % tiles == 0 else len(sapiens_inputs)
+      sapiens_features = torch.cat([
+          self.sapiens_encoder(sapiens_inputs[i:i + chunk]) for i in range(0, len(sapiens_inputs), chunk)])
       sapiens_features = einops.rearrange(sapiens_features, '(b v) c h w -> b v c h w', v=V)
 
     if self.feature_net is None:
@@ -575,9 +581,11 @@ class MatchModel(nn.Module):
     b, v, _, h, w = data["uv"].shape
     uv = data["uv"].to(torch.float16)  # computing correspondences in float16 to save memory
     downsample_for_computation = self.opt.img_patch_size // 2
-    correspondence_idcs, correspondence_scores = (
+    # one sample at a time: the correspondence search's intermediates grow with views x UV patches x pixels
+    # (several GB per 12-view frame), and samples are independent
+    correspondences = [
         uv_util.get_img_uv_patch_correspondences(
-            uv,
+            uv[i:i + 1],
             self.opt.uv_res,
             uv_patch_size=self.opt.uv_patch_size,
             img_patch_size=self.opt.img_patch_size,
@@ -585,7 +593,11 @@ class MatchModel(nn.Module):
             downsample_for_computation=downsample_for_computation,
             return_uv_patch_mask=False,
         )
-    )
+        for i in range(b)
+    ]
+    correspondence_idcs = torch.cat([idcs for idcs, _ in correspondences])
+    correspondence_scores = torch.cat([scores for _, scores in correspondences])
+    del correspondences
     correspondence_scores = correspondence_scores.to(dtype)
     x_img = self._get_img_tokens(data, dtype)
     x_uv, uv_xyz, uv_rgb = self._get_uv_tokens(data, dtype=dtype, correspondence_idcs=correspondence_idcs, correspondence_scores=correspondence_scores, return_uv_xyz_rgb=True)
