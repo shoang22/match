@@ -152,3 +152,22 @@ def test_a_clip_of_one_frame_gives_per_frame_match_even_with_trained_temporal_we
   for k, v in expected.items():
     torch.testing.assert_close(clip_out[k][:, 0], v, atol=ATOL, rtol=0, msg=k)
     torch.testing.assert_close(frame_out[k], v, atol=ATOL, rtol=0, msg=k)
+
+
+def test_only_the_temporal_parameters_train():
+  model = build(temporal=True, clip_len=3)
+  per_frame_names = set(build(temporal=False).state_dict())
+  temporal_names = {n for n, _ in model.named_parameters()} - per_frame_names
+  trainable = {n for n, p in model.named_parameters() if p.requires_grad}
+
+  assert trainable == temporal_names
+  # Per block (one CA and one per-view block here): a temporal sublayer of an RMSNorm (dim), q/k/v/o
+  # projections (4 dim^2) and q/k LayerNorms (4 dim); plus one embedding per frame slot.
+  dim, n_blocks, clip_len = 32, 2, 3
+  assert sum(model.get_parameter(n).numel() for n in trainable) == (
+      n_blocks * (dim + 4 * dim * dim + 4 * dim) + clip_len * dim)
+
+
+def test_per_frame_match_trains_every_parameter():
+  model = build(temporal=False)
+  assert all(p.requires_grad for p in model.parameters())

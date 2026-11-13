@@ -297,6 +297,11 @@ class TemporalAttention(nn.Module):
     return einops.rearrange(h, "(b n) t d -> (b t) n d", b=b, n=n)
 
 
+def is_temporal_parameter(name: str) -> bool:
+  """True for parameters (state-dict keys) of the temporal sublayers and the frame embedding."""
+  return any(part.startswith("temporal_") for part in name.split("."))
+
+
 def _add_temporal_residual(
     temporal_attn: Optional[TemporalAttention],
     x: Tensor,

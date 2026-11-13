@@ -135,7 +135,11 @@ class MatchModel(nn.Module):
     for k, v in ava2flame_mapping.items():
         ava2flame_mapping[k] = torch.from_numpy(v)
     self.ava2flame_mapping = ava2flame_mapping
-      
+
+    if opt.temporal and opt.temporal_freeze_spatial:
+      for name, param in self.named_parameters():
+        param.requires_grad_(is_temporal_parameter(name))
+
     
   def to(self, *args, **kwargs):
     device, dtype, non_blocking, convert_to_format = torch._C._nn._parse_to(*args, **kwargs)
