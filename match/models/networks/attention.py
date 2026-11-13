@@ -281,6 +281,18 @@ class CorrespondenceAwareAttention(nn.Module):
     return uv_tokens, img_tokens
 
 
+# The temporal sublayers run at most this many token positions (sequences of T frames) of a clip at a time.
+# Every position is its own sequence, so the chunking changes nothing in the result. It bounds the memory of
+# one attention call and its backward: the 61,440 image-token positions of a 12-view frame (the image-token
+# ablation) as one call needed ~19 GiB in backward and failed in the kernel. 4096 = the UV-token positions of
+# the pretrained model, which therefore stay one chunk.
+TEMPORAL_CHUNK_POSITIONS = 4096
+
+
+def _position_chunks(n: int):
+  return [slice(s, s + TEMPORAL_CHUNK_POSITIONS) for s in range(0, n, TEMPORAL_CHUNK_POSITIONS)]
+
+
 class TemporalAttention(nn.Module):
   """Temporal attention sublayer of divided space-time attention (TimeSformer).
 
@@ -315,8 +327,13 @@ class TemporalAttention(nn.Module):
     h = einops.rearrange(self.norm(x), "(b t) n d -> b t n d", t=clip_len)
     h = h + frame_embedding[:, None].to(h)
     b, _, n, _ = h.shape
-    h = self.attn(einops.rearrange(h, "b t n d -> (b n) t d"))
-    return einops.rearrange(h, "(b n) t d -> (b t) n d", b=b, n=n)
+    return torch.cat([
+        einops.rearrange(
+            self.attn(einops.rearrange(h[:, :, chunk], "b t n d -> (b n) t d")),
+            "(b n) t d -> (b t) n d", b=b,
+        )
+        for chunk in _position_chunks(n)
+    ], dim=1)
 
 
 def is_temporal_parameter(name: str) -> bool:
@@ -422,12 +439,18 @@ class CorrespondenceAwareLLaMaTransformerBlock(nn.Module):
       ffn_dim_multiplier: Optional[float] = None,
       norm_eps: float = 1e-5,
       temporal: bool = False,
+      temporal_image_tokens: bool = False,
   ):
     super().__init__()
 
     # temporal sublayer over UV tokens (divided space-time attention), run before the spatial attention
     self.temporal_uv = (
         TemporalAttention(dim, num_heads, qk_norm, norm_eps) if temporal else None
+    )
+    # ablation: the same over image tokens, one sequence per (camera, image patch position)
+    self.temporal_img = (
+        TemporalAttention(dim, num_heads, qk_norm, norm_eps)
+        if temporal and temporal_image_tokens else None
     )
     self.norm1 = RMSNorm(dim, norm_eps)
     self.attn = CorrespondenceAwareAttention(
@@ -460,6 +483,9 @@ class CorrespondenceAwareLLaMaTransformerBlock(nn.Module):
     """
     uv_tokens = _add_temporal_residual(
         self.temporal_uv, uv_tokens, clip_len, frame_embedding
+    )
+    img_tokens = _add_temporal_residual(
+        self.temporal_img, img_tokens, clip_len, frame_embedding
     )
     res_uv_tokens, res_img_tokens = self.attn(
         uv_tokens=self.norm1(uv_tokens),
@@ -497,12 +523,18 @@ class PerViewLLaMaTransformerBlock(nn.Module):
       ffn_dim_multiplier: Optional[float] = None,
       norm_eps: float = 1e-5,
       temporal: bool = False,
+      temporal_image_tokens: bool = False,
   ):
     super().__init__()
 
     # temporal sublayer over UV tokens (divided space-time attention), run before the spatial attention
     self.temporal_uv = (
         TemporalAttention(dim, num_heads, qk_norm, norm_eps) if temporal else None
+    )
+    # ablation: the same over image tokens, one sequence per (camera, image patch position)
+    self.temporal_img = (
+        TemporalAttention(dim, num_heads, qk_norm, norm_eps)
+        if temporal and temporal_image_tokens else None
     )
     self.norm1 = RMSNorm(dim, norm_eps)
     self.attn = Attention(dim, num_heads, qk_norm)
@@ -538,6 +570,9 @@ class PerViewLLaMaTransformerBlock(nn.Module):
     """
     uv_tokens = _add_temporal_residual(
         self.temporal_uv, uv_tokens, clip_len, frame_embedding
+    )
+    img_tokens = _add_temporal_residual(
+        self.temporal_img, img_tokens, clip_len, frame_embedding
     )
     out_x = list()
     for x, v in zip([uv_tokens, img_tokens], [1, nviews]):
@@ -627,24 +662,51 @@ class Transformer(nn.Module):
 def _checkpoint_clip_block(block: nn.Module, block_inputs: dict, context: Optional[Tensor]):
   """Runs one block on clip tokens (T folded into the batch) with gradient checkpointing, frame by frame.
 
-  The temporal sublayer needs every frame of a clip, so it is checkpointed on the whole batch. Everything
-  after it (the spatial attention and MLP) treats each sample on its own, so it is checkpointed one sample
-  at a time: the backward pass then recomputes one frame's spatial activations at a time instead of the
-  whole clip's. The result is what the block computes on the whole batch.
+  The temporal sublayers (UV tokens, and image tokens in the ablation) need every frame of a clip, so each
+  is checkpointed on the whole batch, one chunk of token positions at a time (TEMPORAL_CHUNK_POSITIONS): the
+  backward pass then recomputes one chunk's attention at a time. Everything after them (the spatial
+  attention and MLP) treats each sample on its own, so it is checkpointed one sample at a time: the backward
+  pass then recomputes one frame's spatial activations at a time instead of the whole clip's. The result is
+  what the block computes on the whole batch.
+
+  The spatial checkpoints keep the temporal sublayers' outputs until backward. For UV tokens that is small;
+  for image tokens (the ablation) it is one more clip-sized image tensor per block (~240 MiB at 12 views,
+  T=4). So with an image-token sublayer the whole block is checkpointed as well, which keeps only the block's
+  input; the backward pass then runs the block's forward once more before recomputing as above.
   """
+  if block.temporal_img is not None:
+    return torch.utils.checkpoint.checkpoint(
+        _run_clip_block_checkpointed, block, block_inputs, context, use_reentrant=False
+    )
+  return _run_clip_block_checkpointed(block, block_inputs, context)
+
+
+def _run_clip_block_checkpointed(block: nn.Module, block_inputs: dict, context: Optional[Tensor]):
   inputs = dict(block_inputs)
   clip_len, frame_embedding = inputs.pop("clip_len"), inputs.pop("frame_embedding")
-  if block.temporal_uv is not None:
-    inputs["uv_tokens"] = torch.utils.checkpoint.checkpoint(
-        _add_temporal_residual, block.temporal_uv, inputs["uv_tokens"], clip_len, frame_embedding,
-        use_reentrant=False,
-    )
+  for key, temporal_attn in (("uv_tokens", block.temporal_uv), ("img_tokens", block.temporal_img)):
+    if temporal_attn is not None:
+      tokens = inputs[key]
+      inputs[key] = torch.cat([
+          torch.utils.checkpoint.checkpoint(
+              _add_temporal_residual, temporal_attn, tokens[:, chunk], clip_len, frame_embedding,
+              use_reentrant=False,
+          )
+          for chunk in _position_chunks(tokens.shape[1])
+      ], dim=1)
+  # Positional, not keyword, arguments: a checkpoint keeps keyword arguments as a plain python object, out of
+  # reach of an enclosing checkpoint, which then could not drop them.
+  keys = list(inputs)
+
+  def run_block_on_sample(*values):
+    return block(**dict(zip(keys, values)), context=context, clip_len=1, frame_embedding=None)
+
   n_samples = inputs["uv_tokens"].shape[0]
   outputs = [
       torch.utils.checkpoint.checkpoint(
-          block,
-          **{k: v[i:i + 1] if isinstance(v, Tensor) else v for k, v in inputs.items()},
-          context=context, clip_len=1, frame_embedding=None, use_reentrant=False,
+          run_block_on_sample,
+          *(v[i:i + 1] if isinstance(v, Tensor) else v for v in inputs.values()),
+          use_reentrant=False,
       )
       for i in range(n_samples)
   ]
@@ -663,9 +725,11 @@ class CorrespondenceAwareTransformer(nn.Module):
       context_dim: Optional[int] = None,
       temporal: bool = False,
       clip_len: int = 1,
+      temporal_image_tokens: bool = False,
   ):
     """With `temporal`, every block gets a temporal sublayer over UV tokens and the transformer gets one
-    learned embedding per frame slot, `clip_len` slots, zero-initialized."""
+    learned embedding per frame slot, `clip_len` slots, zero-initialized. With `temporal_image_tokens` as
+    well (an ablation), every block also gets one over image tokens; both share the frame embedding."""
     super().__init__()
 
     if not llama_style:
@@ -681,11 +745,13 @@ class CorrespondenceAwareTransformer(nn.Module):
               use_cross_attention,
               context_dim,
               temporal=temporal,
+              temporal_image_tokens=temporal_image_tokens,
           )
       )
       module_list.append(
           PerViewBlock(
-              dim, num_heads, use_cross_attention, context_dim, temporal=temporal
+              dim, num_heads, use_cross_attention, context_dim, temporal=temporal,
+              temporal_image_tokens=temporal_image_tokens,
           )
       )
     self.blocks = nn.ModuleList(module_list)

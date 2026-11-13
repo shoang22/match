@@ -119,6 +119,9 @@ class Options:
   clip_length: int = 4
   # With `temporal`, only the temporal parameters train; everything else has gradients disabled.
   temporal_freeze_spatial: bool = True
+  # Ablation (pixel-aligned temporal attention): every block also gets a temporal sublayer over image tokens,
+  # one sequence per (camera, image patch position). Needs `temporal`. The method keeps this off.
+  temporal_image_tokens: bool = False
   # Learning rate of the spatial (non-temporal) weights when they train (temporal_freeze_spatial = False):
   # they become a second optimizer group, the temporal parameters keep optimizer['lr']. None: one group at
   # optimizer['lr']. Must stay None while the spatial weights are frozen or without `temporal`.

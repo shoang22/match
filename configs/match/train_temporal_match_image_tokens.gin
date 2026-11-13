@@ -1,0 +1,15 @@
+# Pixel-aligned ablation of temporal MATCH (#39): configs/match/train_temporal_match.gin with temporal attention on image tokens
+# as well. Every block also gets a temporal sublayer over image tokens, one sequence of CLIP_LENGTH frames per (camera, image
+# patch position), with the UV-token sublayer's rules (own norm, zero-initialized output projection, frame embedding on its input
+# only, trainable while everything else stays frozen). The method keeps image tokens out of temporal attention; this run only
+# tests the paper's claim that UV tokens are the right place for it.
+#
+# PYOPENGL_PLATFORM=egl PYTHONPATH=$(pwd) PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True torchrun --standalone --nnodes=1 --nproc-per-node=1 scripts/match/train_match.py --gin_configs configs/match/train_temporal_match_image_tokens.gin
+#
+# Same data needs as the stage-1 config. Only the switch and the output folder (NAME) differ.
+
+include 'configs/match/train_temporal_match.gin'
+NAME = 'temporal_match_image_tokens'
+
+Options:
+  temporal_image_tokens = True
