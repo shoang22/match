@@ -105,13 +105,18 @@ def plot_geometric_jitter(path, metrics):
 def write_metric_plots(out_dir, metrics):
     """Writes the per-frame plots of `metrics` (the metrics.json dict) into out_dir. Returns their file names.
 
-    Raises KeyError if the image metrics, the temporal or the jitter section are missing.
+    A flicker-only run (no held-out cameras) has no image-quality scores and gets no image-metrics plot.
+    Raises KeyError if the temporal or the jitter section is missing, or the image metrics of a run with
+    held-out cameras.
     """
-    for section in ('per_frame', 'temporal', 'jitter'):
+    image_quality = bool(metrics['heldout_cameras'])
+    for section in ('per_frame',) * image_quality + ('temporal', 'jitter'):
         if section not in metrics:
             raise KeyError(f"metrics has no '{section}' section to plot")
     out_dir = Path(out_dir)
-    plot_image_metrics(out_dir / IMAGE_METRICS_PLOT, metrics)
-    plot_temporal_metrics(out_dir / TEMPORAL_METRICS_PLOT, metrics)
-    plot_geometric_jitter(out_dir / JITTER_PLOT, metrics)
-    return [IMAGE_METRICS_PLOT, TEMPORAL_METRICS_PLOT, JITTER_PLOT]
+    plots = [(TEMPORAL_METRICS_PLOT, plot_temporal_metrics), (JITTER_PLOT, plot_geometric_jitter)]
+    if image_quality:
+        plots.insert(0, (IMAGE_METRICS_PLOT, plot_image_metrics))
+    for name, plot in plots:
+        plot(out_dir / name, metrics)
+    return [name for name, _ in plots]
