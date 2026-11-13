@@ -158,6 +158,12 @@ class Options:
   ssim_weight: List[float] | float = 0.
   l1_weight: List[float] | float = 0.
   geometry_loss_weights_by_part:Dict[str, float] = field(default_factory=lambda:dict(__default__=1.))
+  # Temporal trajectory loss (#38), on clips of 3+ frames only: per clip, the mean over texels (weighted by
+  # geometry_loss_weights_by_part) and frame triples of each texel's squared second difference over time, of its
+  # final position in mm (TEMPEH part + offset) plus temporal_loss_rgb_weight times that of its colour. Added once
+  # per clip (not per frame) at temporal_loss_weight. 0 (default): off, training is unchanged.
+  temporal_loss_weight: List[float] | float = 0.
+  temporal_loss_rgb_weight: float = 1.
 
   # Visualization
   vis_idx: int = 0

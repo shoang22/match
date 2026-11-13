@@ -233,6 +233,15 @@ On a single RTX 4090 (24GB) under WSL2, one step on a clip of 4 frames x 12 view
 
 The step fits because, with gradient checkpointing, the frames of a clip share only the temporal sublayers: each block's spatial part, the rendering and the losses are recomputed for backward one frame at a time, LPIPS one image at a time, and the frozen correspondence search and Sapiens encoder run frame by frame. None of this changes what is computed. Under WSL2, a run that needs more than 24GB does not fail with an out-of-memory error. The driver moves the excess into system memory and the run gets 5-10x slower, so check the logged peak, not just that the run finishes.
 
+### Temporal trajectory loss
+The option `temporal_loss_weight` (default 0, off) adds a loss on each texel's trajectory over a clip of 3 or more frames: the mean over texels and frame triples of the squared second difference `|x[t+1] - 2 x[t] + x[t-1]|^2` of the texel's final position in mm (TEMPEH part plus offset), plus `temporal_loss_rgb_weight` times the same for its colour. It is added once per clip. Texels are weighted by `geometry_loss_weights_by_part`. Training logs the unweighted terms as `training/temporal_xyz_loss` and `training/temporal_rgb_loss`.
+
+Two configs train with it, both with `temporal_loss_weight = 1e-3` from `configs/match/temporal_loss.gin`:
+- `configs/match/train_temporal_match_temporal_loss.gin`: temporal MATCH, i.e. `configs/match/train_temporal_match.gin` plus the loss.
+- `configs/match/train_match_clips_temporal_loss.gin`: per-frame MATCH trained on clips, with no temporal sublayers. Every pretrained weight trains, at a learning rate of 4e-6 (`configs/match/per_frame_match_on_clips.gin`).
+
+Each one has a `_smoketest.gin` version that runs on the data of the temporal clip-training smoke test above. The command is the same as above, with a different `--gin_configs`. Results go to `experiments/match/<NAME>`. On TCE049 the pretrained model's `temporal_xyz_loss` is 10-30 mm² per clip, so the loss adds 0.01-0.03 to a clip loss of ~0.77, and the colour term is under 1% of it. A temporal MATCH step takes ~8.4 s and peaks at 14.7 GiB allocated. A per-frame-on-clips step takes ~8.7 s and peaks at 17.4 GiB.
+
 #### Troubleshooting (WSL2)
 - `EGL_NOT_INITIALIZED` / `failed to open /dev/dri/renderD128: Permission denied`: the render device is owned by a group your user is not in. Check with `ls -ln /dev/dri`, then either run `sudo chmod 666 /dev/dri/renderD128` (resets when WSL restarts) or add yourself to the owning group permanently, e.g. for gid 992: `sudo groupadd -g 992 render992 && sudo usermod -aG render992 $USER`, followed by `wsl --shutdown`.
 - `pyglet.gl.ContextException: Could not create GL context` during evaluation: `PYOPENGL_PLATFORM=egl` is not set.

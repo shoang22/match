@@ -1,0 +1,10 @@
+# PYTHONPATH=$(pwd) PYOPENGL_PLATFORM=egl conda run -n match --no-capture-output torchrun --standalone --nnodes=1 --nproc-per-node=1 scripts/match/eval_novel_view.py --gin_configs configs/match/eval_novel_view_smoketest.gin
+# Few-sample check of the single-frame novel-view benchmark (#40): 6 TCE049 test frames (SEED 0) of configs/match/eval_novel_view.gin,
+# per-frame MATCH. The same samples with temporal MATCH at initialization (sliding windows), which must score like per-frame MATCH:
+#   --gin_bindings "TEMPORAL = True" --gin_bindings "OUT_DIR = 'experiments/match/eval_novel_view/smoketest_temporal'"
+# Check the outputs afterwards: conda run -n match python -m pytest tests/test_novel_view_outputs.py
+
+include 'configs/match/eval_novel_view.gin'
+NAME = 'eval_novel_view-smoketest'
+OUT_DIR = 'experiments/match/eval_novel_view/smoketest'
+N_SAMPLES = 6

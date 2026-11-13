@@ -13,6 +13,36 @@ import torch
 from match.sequence_eval import texture_filter
 from match.sequence_eval.windows import window_slot
 
+INFERENCE_MODES = ('per_frame', 'sliding', 'block')
+
+
+def resolve_inference_mode(temporal: bool, inference_mode: str | None) -> str:
+    """The inference mode to run: the one asked for, or by default 'sliding' for a temporal checkpoint and
+    'per_frame' otherwise."""
+    mode = inference_mode or ('sliding' if temporal else 'per_frame')
+    if mode not in INFERENCE_MODES:
+        raise ValueError(f'Unknown inference mode {mode!r}; expected one of {INFERENCE_MODES}')
+    return mode
+
+
+def frame_forward(runner) -> Callable[[dict], dict]:
+    """A frame's batch (B=1, on the device) -> its masked Gaussians (1,1,C,L,1), TEMPEH part included: per-frame MATCH."""
+    model = runner.get_unwrapped_model()
+    return lambda batch: model.mask_gaussians(
+        runner.model(batch, func_name='forward_gaussians', return_tempeh_xyz=True))
+
+
+def clip_forward(runner) -> Callable[[dict], dict]:
+    """A clip batch (B=1, T frames; see `stack_window`) -> its masked Gaussians (1,T,1,C,L,1), TEMPEH part included."""
+    from match.utils import data_util  # pulls in the model utilities; keep this module light to import
+
+    def forward(clip):
+        clip = data_util.MatchBatch(clip).to_device(runner.device)
+        _, masked = runner.model(clip, func_name='forward_gaussians', return_masked_gaussians=True,
+                                 return_tempeh_xyz=True)
+        return masked
+    return forward
+
 
 @dataclass
 class PredictedFrame:
