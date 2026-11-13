@@ -49,6 +49,22 @@ def test_a_clip_stacks_frames_at_the_clip_stride_on_a_time_axis(tmp_path):
     assert tuple(clip['image'].shape) == (2, NUM_CAMERAS, 3, CROP_HEIGHT, CROP_WIDTH)
 
 
+
+def test_the_data_loader_batches_clips_with_the_batch_axis_before_the_time_axis(tmp_path):
+    capture = synth.write_capture(tmp_path / 'capture', tmp_path / 'masks', nframes=4)
+    dataset_kwargs = dict(root_path=str(capture.root), mask_directory=str(capture.mask_dir), height=HEIGHT,
+                          width=WIDTH, camera_angles=synth.AVA_CAMERA_ANGLES, head_crop=True,
+                          head_crop_height=CROP_HEIGHT, head_crop_width=CROP_WIDTH, require_verts=False,
+                          require_segmentation=False, clip_length=3)
+    loader = data.get_loader_cls('calibrated')(dict(batch_size=2), dataset_kwargs, training=False)
+    batch = next(iter(loader))
+    assert tuple(batch['image'].shape) == (2, 3, NUM_CAMERAS, 3, CROP_HEIGHT, CROP_WIDTH)
+    assert tuple(batch['camera'].shape) == (2, 3, NUM_CAMERAS)
+    # default_collate transposes the per-clip frame lists: batch['frame'][t][b]
+    assert [list(frames) for frames in batch['frame']] == [['000000', '000001'], ['000001', '000002'],
+                                                           ['000002', '000003']]
+
+
 # Six of the 12 target angles, so a frame that lacks one camera still has enough cameras. The rig's camera 0
 # (az 1.0, el 0.2) is the one nearest to the first angle, [0, 0].
 SIX_ANGLES = synth.AVA_CAMERA_ANGLES[:6]
