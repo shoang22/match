@@ -272,9 +272,9 @@ class BaseSingleCaptureDataset(torch.utils.data.Dataset):
                 try:
                     uv = self.load_uv(frame_id=frame_id, camera_id=camera_id)
                 except Exception as e:
-                    # if not camera_id in extra_camera_ids:  # don't need the uvmaps for extra cameras
-                    #     print(f'WARNING: DIDNT FIND UVMAP OF INPUT IMAGE: {self.capture.sid}-{frame_id}-{camera_id}')
                     uv = np.zeros_like(img)
+                    if camera_id in camera_ids:  # extra cameras don't need UV maps and usually have none
+                        logging.warning(f'UV map of input view {self.sid}-{frame_id}-{camera_id} failed to load ({e}); using zeros.')
 
                 sg = self.load_sg(frame_id=frame_id, camera_id=camera_id)
                 if sg is None:

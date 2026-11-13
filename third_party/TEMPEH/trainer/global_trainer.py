@@ -29,7 +29,7 @@ from utils.mesh_renderer import render_mesh, dist_to_rgb
 from utils.data_augment import get_subset_views
 from utils.point_to_surface_loss import PointToSurfaceLoss, compute_s2m_distance
 from utils.edge_loss import EdgeLoss
-from gtempeh_utils import uv_util, file_helper
+from gtempeh_utils import uv_util, file_helper, dataset_registry
 import tqdm
 from trainer.base_trainer import BaseTrainer
 from option_handler.train_options_global import TrainOptions
@@ -42,7 +42,7 @@ from pathlib import Path
 from PIL import Image
 import torchvision
 from match.utils import data_util
-from match.data import AvaSingleCaptureDataset, NersembleSingleCaptureDataset, NersembleMultiCaptureDataset, AvaMultiCaptureDataset, MultiDataset
+from match.data import AvaMultiCaptureDataset, MultiDataset
 from utils import normal_loss, point_to_point_loss
 
 
@@ -102,61 +102,23 @@ class Trainer(BaseTrainer):
         self.model = torch.nn.DataParallel(model)
 
     def register_dataset(self, init_full_dataset=False, process_idx=0, world_size=1):
-        ava_root = self.args.dataset_directory
-        cam_angles = ast.literal_eval(self.args.camera_angles)
-        subjects = ast.literal_eval(self.args.subjects) if self.args.subjects else list()
-        frame_stride = self.args.frame_stride
-        ava_height = self.args.height
-        ava_width = self.args.width
-        max_captures = self.args.max_captures
-        segment = getattr(self.args, 'segment', None)
-
-        nersemble_root = getattr(self.args, 'nersemble_dataset_directory', None)
-        nersemble_subjects = ast.literal_eval(self.args.nersemble_subjects) if getattr(self.args, 'nersemble_subjects', None) else list()
-        nersemble_frame_stride = getattr(self.args, 'nersemble_frame_stride', None)
-        nersemble_height = getattr(self.args, 'nersemble_height', None)
-        nersemble_width = getattr(self.args, 'nersemble_width', None)
-        nersemble_max_captures = getattr(self.args, 'nersemble_max_captures', None)
-        nersemble_camera_angles = ast.literal_eval(self.args.nersemble_camera_angles) if getattr(self.args, 'nersemble_camera_angles', None) else list()
         self.dataset_full = self.dataset_train = self.dataset_val = None
+        self.full_dataset_specs = None
         self.dataloader_full = self.dataloader_train = self.dataloader_val = None
 
         if init_full_dataset:
-            ava_dataset = AvaMultiCaptureDataset(
-            root_path=ava_root, 
-            camera_angles=cam_angles, 
-            training=None,
-            height=ava_height, width=ava_width,
-            frame_stride=frame_stride,
-            max_captures = max_captures,
-            process_idx=process_idx, 
-            world_size=world_size,
-            deterministic_shuffle=False,
-            require_verts=False,
-            require_segmentation=False,
-            only_subjects=subjects,
-            segment=segment,
-            )
-            datasets = [ava_dataset]
-            if nersemble_root is not None:
-                nersemble_dataset = NersembleMultiCaptureDataset(
-                    root_path=nersemble_root,
-                    camera_angles=nersemble_camera_angles,
-                    training=None,
-                    height=nersemble_height, width=nersemble_width,
-                    frame_stride=nersemble_frame_stride,
-                    max_captures = nersemble_max_captures,
-                    process_idx=process_idx,
-                    world_size=world_size,
-                    deterministic_shuffle=False,
-                    invalid_captures_path = 'assets/nersemble/invalid_captures.txt',
-                    require_verts=False,
-                    require_segmentation=False,
-                    only_subjects=nersemble_subjects)
-                datasets.append(nersemble_dataset)
-            self.dataset_full = MultiDataset(datasets)
+            # datasets by type (`--datasets`), or Ava-256 (+ NeRSemble) from the legacy options
+            self.full_dataset_specs = dataset_registry.dataset_specs_from_args(self.args)
+            self.dataset_full = MultiDataset(dataset_registry.build_datasets(
+                self.full_dataset_specs, process_idx=process_idx, world_size=world_size))
             self.dataloader_full = self.make_data_loader(self.dataset_full, cuda=True, shuffle=False, batch_size=1)
         else:
+            ava_root = self.args.dataset_directory
+            cam_angles = ast.literal_eval(self.args.camera_angles)
+            frame_stride = self.args.frame_stride
+            ava_height = self.args.height
+            ava_width = self.args.width
+            max_captures = self.args.max_captures
             self.dataset_train = AvaMultiCaptureDataset(
                 root_path=ava_root, 
                 camera_angles=cam_angles, 
@@ -311,9 +273,11 @@ class Trainer(BaseTrainer):
 
     @torch.no_grad()
     def save_uvmap_batch(self, data, outdir, save_gt=False, save_verts=True):
+        # output folder and inverse coordinate transform come from the dataset / sample that produced each sample.
+        # Read them before converting, since the TEMPEH batch drops the scene fields.
+        out_subdirs = dataset_registry.sample_output_dirs(data, self.full_dataset_specs, outdir)
+        scene = {k: data[k] for k in ('scene_rotation', 'scene_center', 'scene_scale')}
         data = data_util.TempehBatch.from_match_batch(data_util.MatchBatch(data))
-        ds_classes = [AvaSingleCaptureDataset if (not 'dataset_idx' in data) or (data['dataset_idx'][j] == 0) else NersembleSingleCaptureDataset for j in range(len(data['subject']))]
-        out_subdirs = [Path(f'{outdir}/{"ava-256" if ds_classes[j]==AvaSingleCaptureDataset else "nersemble"}/{data["subject"][j]}/{data["sequence"][j]}/{data["frame"][j]}') for j in range(len(data['subject']))]
         out_paths_vert = list()
         out_paths_vis = list()
         out_paths_uv = list()
@@ -350,16 +314,8 @@ class Trainer(BaseTrainer):
             uv_gt_renders = uv_util.render_uvmaps_from_TEMPEH_sample(data, faces=self.template_faces, face_uv_coords=self.template_face_uv_coords,
                                                               out_height=self.args.uv_out_height, out_width=self.args.uv_out_width, use_gtverts=True)
         
-        # converting back from TEMPEH coordinate system to MATCH coordinate system
-        pred_points = pred_points.detach().cpu().numpy()
-        pred_points /= 1000.0
-        B=len(pred_points)
-
-        # converting to respective dataset coordinate system
-        ds_scale_factor = np.stack([ds_cls.SCALE_FACTOR for ds_cls in ds_classes])
-        ds_center = np.stack([ds_cls.SCENE_CENTER for ds_cls in ds_classes])
-        ds_rotation = np.stack([ds_cls.SCENE_ROTATION for ds_cls in ds_classes])
-        pred_points = data_utils.apply_inv_rotation_scale_center_to_points(pred_points, rotation=ds_rotation, scale=ds_scale_factor, center=ds_center)
+        # converting back from TEMPEH coordinate system (mm, normalized) to the respective dataset coordinate system
+        pred_points = dataset_registry.to_dataset_frame(pred_points.detach().cpu().numpy(), scene)
 
         for ib in range(len(pred_points)):
             out_path = out_paths_vert[ib]

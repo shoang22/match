@@ -74,6 +74,12 @@ class TrainOptions(BaseTrainOptions):
         self.add_arg( cate='data', abbr='max-captures', name='max-captures', type=int, default=argparse.SUPPRESS)
         self.add_arg( cate='data', abbr='segment', name='segment', type=str, default=argparse.SUPPRESS)  # Ava-256 seg_id; None = all segments
 
+        # save_predictions datasets by type, e.g.
+        # "[{'type': 'ava256', 'root_path': 'data/ava-256', 'camera_angles': [[0,0], ...], 'height': 256, 'width': 167, 'frame_stride': 10}]".
+        # 'type' is a name from match.data.get_dataset_cls; the other keys are that dataset's constructor kwargs.
+        # When given, it replaces the dataset-directory/camera-angles/... and nersemble-* options.
+        self.add_arg( cate='data', abbr='datasets', name='datasets', type=str, default=argparse.SUPPRESS)
+
         # nersemble dataset
         self.add_arg( cate='data', abbr='nersemble-dir', name='nersemble-dataset-directory', type=str, default=argparse.SUPPRESS)
         self.add_arg( cate='data', abbr='nersemble-subjects', name='nersemble-subjects', type=str, default=argparse.SUPPRESS)
@@ -157,6 +163,7 @@ class TrainOptions(BaseTrainOptions):
             'segment': None,
             'uv-n-samples': -1,
             'subjects': None,
+            'datasets': None,
             'nersemble-dataset-directory': None,
             'nersemble-subjects': None,
             'nersemble-camera-angles': None,

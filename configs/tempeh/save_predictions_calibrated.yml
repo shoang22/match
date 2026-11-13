@@ -1,0 +1,51 @@
+# condor/run.py configs/tempeh/save_predictions_calibrated.yml
+#
+# TEMPEH coarse meshes and per-camera UV maps for a calibrated multi-view capture (dataset type `calibrated`):
+# a folder with images/frame{FFFFFF}_cam{CCC}.png and opencv_ba.txt, plus a mask folder with the same file names.
+# No Ava-256 data is needed. Edit the paths below.
+#
+# Outputs: ${out_dir}/calibrated/<subject>/<sequence>/<frame>/{verts.npy, uv_cam<ID>.png, vis.jpg}.
+# Subject and sequence default to the capture folder name. Point MATCH's uv_directory and coarse_mesh_directory at
+# ${out_dir}/calibrated.
+#
+# Framing: the dataset cuts each image to Ava-256's aspect ratio around the head, so the settings are the Ava
+# quickstart's: TEMPEH's 256x167 input with no head crop, and UV maps at MATCH's 786x512 Ava image size. For
+# 1024x1024 images with a focal length of ~2400 px and the head ~1 m away, a 200 mm head is then ~120 px wide in
+# TEMPEH's input, as in Ava's.
+
+name: save_predictions-calibrated
+data_dir: data/captures/background 1           # capture folder
+mask_dir: data/captures/masks/background 1     # foreground masks, same file names as images/
+out_dir: data/tempeh_predictions/calibrated
+nframes: 1                                     # -1: all frames
+frame_stride: 1
+script: scripts/tempeh/save_predictions.py
+tempeh_config: assets/pretrained_models/tempeh/config.json
+arguments: "--config-filename ${tempeh_config} \
+            --datasets '[{\"type\": \"calibrated\", \
+                          \"root_path\": \"${data_dir}\", \
+                          \"mask_directory\": \"${mask_dir}\", \
+                          \"camera_angles\": [[0,0], [0, -15], [20,0], [20, 36], [20, -15], [-20,0], [-20, 36], [-20, -15], [40,-5], [40, 25], [-40,-5], [-40, 25]], \
+                          \"height\": 256, \"width\": 167, \
+                          \"nframes\": ${nframes}, \"frame_stride\": ${frame_stride}}]' \
+            --outpath \"${out_dir}\" \
+            --uv-out-height 786 \
+            --uv-out-width 512 \
+            --uv-n-samples -1"
+
+
+# condor configs
+CondorParameters:
+  name: ${name}
+  batch_name: ${name}
+  cmd: 'python ${script} ${arguments}'
+  requirements: '(TARGET.CUDACapability >= 8.0)'
+  base_dir: ${out_dir}
+  request_gpus: 1
+  request_cpus: 16
+  request_memory: 64_000
+  request_disk: 50G
+  backup_excludepatterns: ['third_party']
+  environment: {'CC': 'gcc-11', 'CXX':'g++-11'}
+  njobs: 1
+  retries: 0

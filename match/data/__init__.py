@@ -2,6 +2,7 @@ from typing import Any, Iterator
 from torch.utils.data.dataloader import DataLoader
 from .ava256_dataset import AvaDataLoader, AvaMultiCaptureDataset, AvaSingleCaptureDataset
 from .nersemble_dataset import NersembleDataLoader, NersembleMultiCaptureDataset, NersembleSingleCaptureDataset
+from .calibrated_capture_dataset import CalibratedCaptureDataLoader, CalibratedMultiCaptureDataset, CalibratedSingleCaptureDataset
 from match.utils import log_console_util
 import torch
 import copy
@@ -14,12 +15,14 @@ logger = log_console_util.getLogger(__name__)
 def get_loader_cls(s:str):
   str_to_cls = dict(ava256=AvaDataLoader,
                     nersemble=NersembleDataLoader,
+                    calibrated=CalibratedCaptureDataLoader,
                     multi=MultiDataLoader,)
   return str_to_cls[s]
 
 def get_dataset_cls(s):
   str_to_cls = dict(ava256=AvaMultiCaptureDataset,
                     nersemble=NersembleMultiCaptureDataset,
+                    calibrated=CalibratedMultiCaptureDataset,
                     )
   return str_to_cls[s]
 
