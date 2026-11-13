@@ -10,6 +10,8 @@ from typing import Callable, Iterable, Iterator, Protocol
 
 import torch
 
+from match.sequence_eval import texture_filter
+
 
 @dataclass
 class PredictedFrame:
@@ -60,3 +62,48 @@ class PerFramePredictor:
 
     def metrics(self):
         return {}
+
+
+class TextureFilterPredictor:
+    """Another predictor's frames smoothed over time by the texture filter: the temporal-filter baseline.
+
+    Frame t is emitted as soon as the inner predictor has emitted the last frame its kernel reaches
+    (t + radius, or the end of the sequence), so at most 2 * radius + 1 frames are held, on the CPU.
+    """
+
+    def __init__(self, inner: FramePredictor, sigma: float):
+        """inner: the per-frame predictor whose textures are filtered. sigma: kernel width in frames (> 0)."""
+        if not sigma > 0:
+            raise ValueError(f'The texture filter needs sigma > 0, got {sigma}')
+        self.inner, self.sigma = inner, float(sigma)
+        self.radius = texture_filter.kernel_radius(self.sigma)
+
+    def predict(self, batches):
+        held = {}  # frame index -> PredictedFrame, on the CPU
+        t = n = 0  # next frame to emit, frames read so far
+        for frame in self.inner.predict(batches):
+            held[frame.frame_index] = frame.to('cpu')
+            n = frame.frame_index + 1
+            while t + self.radius < n:  # frame t's kernel ends at t + radius: the same window whatever n becomes
+                yield self._filtered(held, t, n)
+                t += 1
+        while t < n:
+            yield self._filtered(held, t, n)
+            t += 1
+
+    def _filtered(self, held, t, n):
+        """Frame t filtered over the held frames (n read so far); drops the frames no later frame needs."""
+        start, weights = texture_filter.kernel(t, n, self.sigma)
+        textures = [held[s].gaussians for s in range(start, start + len(weights))]
+        frame = PredictedFrame(t, held[t].batch, texture_filter.blend(textures, weights, centre=t - start))
+        held.pop(t - self.radius, None)  # frame t + 1's kernel starts at t + 1 - radius
+        return frame
+
+    def metrics(self):
+        sections = {'texture_filter': {'sigma': self.sigma, 'radius_frames': self.radius,
+                                       'filtered': list(texture_filter.FILTERED_KEYS)}}
+        inner = self.inner.metrics()
+        clash = set(inner) & set(sections)
+        if clash:
+            raise KeyError(f'The inner predictor returned metrics sections the texture filter writes: {clash}')
+        return {**inner, **sections}
