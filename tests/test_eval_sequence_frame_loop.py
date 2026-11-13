@@ -48,7 +48,7 @@ class Sequence(torch.utils.data.Dataset):
 def make_runner():
     def render_gaussians(gaussians, C2W, fxfycxcy, height, width, bg_color):
         return {'image': torch.zeros(1, C2W.shape[1], 3, height, width)}
-    opt = SimpleNamespace(val_loader_params=[{'kwargs': {'dataloader_kwargs': {}}}])
+    opt = SimpleNamespace(val_loader_params=[{'kwargs': {'dataloader_kwargs': {}}}], temporal=False, clip_length=4)
     return SimpleNamespace(opt=opt, device=torch.device('cpu'), render_gaussians=render_gaussians)
 
 
@@ -174,3 +174,86 @@ def test_a_sigma_sweep_only_changes_the_config(config, sigma):
     _, metrics = run_configured_predictor()
 
     assert metrics['texture_filter']['sigma'] == sigma
+
+
+def make_temporal_runner(clip_length=2):
+    """A temporal checkpoint stand-in that only runs on clips: frame i of the window starting at frame s has
+    position 100 * s + 10 * i, and TEMPEH part i when asked for it."""
+    def forward(batch, func_name, return_masked_gaussians=False, return_tempeh_xyz=False, **kwargs):
+        assert func_name == 'forward_gaussians'
+        values = batch['value']
+        assert values.ndim == 2, 'expected a clip batch, (1, T)'
+        gaussians = {'xyz': (100 * values[0, 0] + 10 * values).reshape(1, -1, 1, 1, 1, 1)}
+        if return_tempeh_xyz:
+            gaussians['tempeh_xyz'] = values.reshape(1, -1, 1, 1, 1, 1)
+        return (gaussians, gaussians) if return_masked_gaussians else gaussians
+    runner = make_runner()
+    runner.opt.temporal, runner.opt.clip_length = True, clip_length
+    runner.model = forward
+    runner.get_unwrapped_model = lambda: SimpleNamespace(mask_gaussians=lambda gaussians: gaussians)
+    return runner
+
+
+def run_temporal_predictor(runner):
+    predictor = eval_sequence.build_predictor(runner)
+    plan = SequencePlan(Sequence(), schedule=SCHEDULE, fixed_view_camera=CAMERA)
+    collector, panel, video, preview = Recorder(), Recorder(), Recorder(), Recorder()
+    keys = []
+    collector.add_frame = lambda ctx: (keys.append(set(ctx.gaussians)), Recorder.add_frame(collector, ctx))
+    eval_sequence.run_frames(runner, plan, predictor, [panel], [collector], video, preview)
+    return collector, keys, predictor.metrics()
+
+
+@needs_assets
+def test_a_temporal_checkpoint_runs_in_sliding_windows_by_default(config):
+    config()
+
+    collector, keys, metrics = run_temporal_predictor(make_temporal_runner(clip_length=2))
+
+    # Windows of 2 over 3 frames: frames 0, 1 from the window at 0 (slots 0, 1), frame 2 from the window at 1 (slot 1).
+    assert collector.frames == [(0, '000010', 0.0), (1, '000022', 10.0), (2, '000034', 120.0)]
+    assert metrics['inference']['mode'] == 'sliding'
+    assert metrics['inference']['per_frame'] == {
+        '000010': {'window_start': 0, 'window_start_frame': '000010', 'slot': 0},
+        '000022': {'window_start': 0, 'window_start_frame': '000010', 'slot': 1},
+        '000034': {'window_start': 1, 'window_start_frame': '000022', 'slot': 1}}
+    assert all('tempeh_xyz' in k for k in keys)  # the geometric jitter collector reads it
+
+
+@needs_assets
+def test_the_config_selects_block_mode_for_a_temporal_checkpoint(config):
+    config("INFERENCE_MODE = 'block'")
+
+    collector, _, metrics = run_temporal_predictor(make_temporal_runner(clip_length=2))
+
+    # Blocks of 2 over 3 frames: frames 0, 1 from the block at 0, frame 2 from the last block shifted inward to 1.
+    assert [value for _, _, value in collector.frames] == [0.0, 10.0, 120.0]
+    assert metrics['inference']['mode'] == 'block'
+
+
+@needs_assets
+def test_a_sequence_shorter_than_the_temporal_window_runs_as_one_clip(config):
+    config()
+
+    collector, _, metrics = run_temporal_predictor(make_temporal_runner(clip_length=4))
+
+    assert [value for _, _, value in collector.frames] == [0.0, 10.0, 20.0]
+    assert metrics['inference']['window_length'] == 3
+
+
+@needs_assets
+def test_the_texture_filter_is_refused_for_a_temporal_checkpoint(config):
+    config('TEXTURE_FILTER_SIGMA = 1.0')
+
+    with pytest.raises(ValueError, match='texture filter'):
+        eval_sequence.build_predictor(make_temporal_runner())
+
+
+@needs_assets
+def test_the_config_marks_the_checkpoint_as_temporal(config):
+    from match.options import Options
+    config()
+    assert Options().temporal is False
+
+    config('TEMPORAL = True')
+    assert Options().temporal is True
