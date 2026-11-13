@@ -81,6 +81,20 @@ FULL = EvalRun(
     name='full', config='configs/match/eval_sequence_SEN_a_good_morrow.gin',
     out_dir_setting=os.environ.get('EVAL_SEQUENCE_FULL_DIR', 'experiments/match/eval_sequence/SEN_a_good_morrow'),
     frames=SEGMENT_FRAMES, heldout_cameras=list(HELDOUT_CAMERAS), n_output_frames=128)
+# The smoke run with temporal MATCH at initialization in sliding windows (one clip of the 3 frames).
+TEMPORAL_SMOKE = EvalRun(
+    name='temporal_smoke', config='configs/match/eval_sequence_smoketest_temporal.gin',
+    out_dir_setting=os.environ.get('EVAL_SEQUENCE_TEMPORAL_SMOKE_DIR',
+                                   'experiments/match/eval_sequence/smoketest_temporal'),
+    frames=SEGMENT_FRAMES[:3], heldout_cameras=[FIXED_VIEW_CAMERA], n_output_frames=10)
+# The temporal smoke run on 6 frames, so that several windows of 4 run: sliding (3 windows) and block (2 windows).
+# Commands in configs/match/eval_sequence_smoketest_temporal.gin.
+TEMPORAL_SLIDING6, TEMPORAL_BLOCK6 = (
+    EvalRun(name=f'temporal_{mode}6', config='configs/match/eval_sequence_smoketest_temporal.gin',
+            out_dir_setting=os.environ.get(f'EVAL_SEQUENCE_TEMPORAL_{mode.upper()}6_DIR',
+                                           f'experiments/match/eval_sequence/smoketest_temporal_{mode}6'),
+            frames=SEGMENT_FRAMES[:6], heldout_cameras=[FIXED_VIEW_CAMERA], n_output_frames=19)
+    for mode in ['sliding', 'block'])
 FLICKER = EvalRun(
     name='flicker', config='configs/match/eval_sequence_flicker_smoketest.gin',
     out_dir_setting=os.environ.get('EVAL_SEQUENCE_FLICKER_DIR', 'experiments/match/eval_sequence/flicker_smoketest'),

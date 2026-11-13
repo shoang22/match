@@ -1,5 +1,6 @@
-"""Sequence evaluation of MATCH: an independent forward pass of the pretrained model on every frame of an
-Ava-256 segment, rendered from held-out cameras that are never inputs.
+"""Sequence evaluation of MATCH: a prediction for every frame of an Ava-256 segment, rendered from held-out
+cameras that are never inputs. Per-frame MATCH runs an independent forward pass per frame; a temporal
+checkpoint runs on windows of frames and keeps each frame from one window (sliding or block mode).
 
 Flicker-only run: with no held-out cameras (e.g. a calibrated capture whose cameras are all inputs), the
 configured input camera `fixed_view_input_camera` is the fixed view. The run scores flicker and geometric
@@ -75,19 +76,38 @@ def load_sequence(opt, heldout_camera_ids, fixed_view_input_camera=None):
 
 
 @gin.configurable()
-def build_predictor(runner, texture_filter_sigma: float = None) -> seq_predictors.FramePredictor:
-    """How each frame's Gaussian texture is predicted: one forward pass per frame.
+def build_predictor(runner, texture_filter_sigma: float = None, inference_mode: str = None
+                    ) -> seq_predictors.FramePredictor:
+    """How each frame's Gaussian texture is predicted.
 
+    inference_mode: 'per_frame' (one forward pass per frame), or windowed inference on clips of
+      `opt.clip_length` frames, keeping each frame from one window: 'sliding' (the window from one frame
+      before it) or 'block' (non-overlapping windows); see match/sequence_eval/windows.py. None picks
+      'sliding' for a temporal checkpoint (`opt.temporal`) and 'per_frame' otherwise. Windowed runs write
+      an `inference` section (mode, and each frame's window start and slot) to metrics.json.
     texture_filter_sigma: if set, the per-frame textures are smoothed over time by a centred Gaussian of
-      this width in frames (the temporal-filter baseline, match/sequence_eval/texture_filter.py); off by default.
+      this width in frames (the temporal-filter baseline, match/sequence_eval/texture_filter.py); off by
+      default. Per-frame inference of a per-frame checkpoint only.
     """
-    model = runner.get_unwrapped_model()
-    predictor = seq_predictors.PerFramePredictor(
-        forward=lambda batch: model.mask_gaussians(
-            runner.model(batch, func_name='forward_gaussians', return_tempeh_xyz=True)))
-    if texture_filter_sigma is not None:
-        predictor = seq_predictors.TextureFilterPredictor(predictor, sigma=texture_filter_sigma)
-    return predictor
+    opt, model = runner.opt, runner.get_unwrapped_model()
+    mode = inference_mode or ('sliding' if opt.temporal else 'per_frame')
+    if texture_filter_sigma is not None and (opt.temporal or mode != 'per_frame'):
+        raise ValueError('The texture filter is the baseline for per-frame MATCH: it cannot run on a temporal '
+                         f'checkpoint or with windowed inference (temporal={opt.temporal}, inference_mode={mode!r})')
+    if mode == 'per_frame':
+        predictor = seq_predictors.PerFramePredictor(
+            forward=lambda batch: model.mask_gaussians(
+                runner.model(batch, func_name='forward_gaussians', return_tempeh_xyz=True)))
+        if texture_filter_sigma is not None:
+            predictor = seq_predictors.TextureFilterPredictor(predictor, sigma=texture_filter_sigma)
+        return predictor
+
+    def forward_clip(clip):
+        clip = data_util.MatchBatch(clip).to_device(runner.device)
+        _, masked = runner.model(clip, func_name='forward_gaussians', return_masked_gaussians=True,
+                                 return_tempeh_xyz=True)
+        return masked
+    return seq_predictors.WindowedPredictor(forward_clip, clip_length=opt.clip_length, mode=mode)
 
 
 def load_batches(runner, sequence):

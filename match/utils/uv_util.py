@@ -37,28 +37,22 @@ def bounding_box(mask: torch.Tensor) -> torch.Tensor:
     """
     B, H, W = mask.shape
 
-    # Make coordinate grids
-    rows = torch.arange(H, device=mask.device).view(1, H, 1)
-    cols = torch.arange(W, device=mask.device).view(1, 1, W)
+    # The rows and columns holding any True, so that nothing of the mask's (B, H, W) size is allocated
+    # beyond these reductions (at full size the mask has ~1e9 elements).
+    row_has_true = mask.any(dim=-1)  # (B, H)
+    col_has_true = mask.any(dim=-2)  # (B, W)
+    rows = torch.arange(H, device=mask.device)
+    cols = torch.arange(W, device=mask.device)
 
-    # Broadcast over mask
-    masked_rows = torch.where(mask, rows, torch.full_like(rows, H))
-    masked_cols = torch.where(mask, cols, torch.full_like(cols, W))
+    t = torch.where(row_has_true, rows, H).amin(dim=-1)  # min row
+    l = torch.where(col_has_true, cols, W).amin(dim=-1)  # min col
+    b = torch.where(row_has_true, rows, -1).amax(dim=-1)  # max row
+    r = torch.where(col_has_true, cols, -1).amax(dim=-1)  # max col
 
-    t = masked_rows.amin(dim=(-2, -1))  # min row
-    l = masked_cols.amin(dim=(-2, -1))  # min col
-
-    masked_rows = torch.where(mask, rows, torch.full_like(rows, -1))
-    masked_cols = torch.where(mask, cols, torch.full_like(cols, -1))
-
-    b = masked_rows.amax(dim=(-2, -1))  # max row
-    r = masked_cols.amax(dim=(-2, -1))  # max col
-
-    boxes = torch.stack([t, l, b, r], dim=-1)  # (N, V, 4)
+    boxes = torch.stack([t, l, b, r], dim=-1)  # (B, 4)
 
     # Handle no-True case
-    has_true = mask.any(dim=(-2, -1))
-    boxes[~has_true] = -1
+    boxes[~row_has_true.any(dim=-1)] = -1
 
     return boxes
 
@@ -71,7 +65,6 @@ def get_img_uv_patch_correspondences(
     n_neighbors: int,
     downsample_for_computation: int = 1,
     return_uv_patch_mask: bool = True,
-    views_per_chunk: int | None = 1,
 ):
   """returns the correspondence mask between uv patches and image regions.
 
@@ -88,8 +81,6 @@ def get_img_uv_patch_correspondences(
       computation for memory efficiency
     return_uv_patch_mask: if True, returns the uv patch mask (B, V, nv_uv,
       nh_uv, H, W), bool
-    views_per_chunk: score this many views at a time (None: all at once); the
-      result is the same, the peak memory grows with it
 
   Returns:
     uv_patch_masks (optional): for every uv patch, contains visibility mask of
@@ -152,81 +143,63 @@ def get_img_uv_patch_correspondences(
   patch_edges_lower = einops.rearrange(patch_edges_lower, "n -> 1 n 1 1")
   patch_edges_left = einops.rearrange(patch_edges_left, "n -> 1 n 1 1")
   patch_edges_right = einops.rearrange(patch_edges_right, "n -> 1 n 1 1")
+  uv_renders = einops.rearrange(uv_renders, "b v c h w -> (b v) 1 c h w")
+  uv_patch_mask_u = torch.logical_and(
+      patch_edges_left <= uv_renders[:, :, 0],
+      uv_renders[:, :, 0] < patch_edges_right,
+  )  # (BV, sqrt_n_patches, h w)
+  uv_patch_mask_v = torch.logical_and(
+      patch_edges_lower <= uv_renders[:, :, 1],
+      uv_renders[:, :, 1] < patch_edges_upper,
+  )
+  uv_patch_masks = torch.logical_and(
+      einops.rearrange(uv_patch_mask_v, "bv n h w -> bv n 1 h w"),
+      einops.rearrange(uv_patch_mask_u, "bv n h w -> bv 1 n h w"),
+  )
+  uv_patch_masks = torch.logical_and(
+      uv_patch_masks,
+      einops.rearrange(uv_renders[:, :, -1].bool(), "bv n h w -> bv n 1 h w"),
+  )
+  uv_patch_masks = einops.rearrange(
+      uv_patch_masks, "(b v) nv nh h w -> b v nv nh h w", b=b, v=v
+  )
 
-  def view_patch_scores(uv_renders):
-    """Patch masks and matching scores of the views in `uv_renders` (B, v, 3, h, w), each view on its own."""
-    b, v = uv_renders.shape[:2]
-    uv_renders = einops.rearrange(uv_renders, "b v c h w -> (b v) 1 c h w")
-    uv_patch_mask_u = torch.logical_and(
-        patch_edges_left <= uv_renders[:, :, 0],
-        uv_renders[:, :, 0] < patch_edges_right,
-    )  # (BV, sqrt_n_patches, h w)
-    uv_patch_mask_v = torch.logical_and(
-        patch_edges_lower <= uv_renders[:, :, 1],
-        uv_renders[:, :, 1] < patch_edges_upper,
-    )
-    uv_patch_masks = torch.logical_and(
-        einops.rearrange(uv_patch_mask_v, "bv n h w -> bv n 1 h w"),
-        einops.rearrange(uv_patch_mask_u, "bv n h w -> bv 1 n h w"),
-    )
-    uv_patch_masks = torch.logical_and(
-        uv_patch_masks,
-        einops.rearrange(uv_renders[:, :, -1].bool(), "bv n h w -> bv n 1 h w"),
-    )
-    uv_patch_masks = einops.rearrange(
-        uv_patch_masks, "(b v) nv nh h w -> b v nv nh h w", b=b, v=v
-    )
-
-    uv_img_patch_scores = (
-        einops.rearrange(
-            uv_patch_masks,
-            "b v nv_uv nh_uv (nv_img hpatch) (nh_img wpatch) -> b v nv_uv nh_uv"
-            " nv_img nh_img (hpatch wpatch)",
-            hpatch=downsampled_patch_size,
-            wpatch=downsampled_patch_size,
-        )
-        .to(dtype)
-        .mean(dim=-1)
-    )  # for every uv patch, matching scores of image patches (B, V, nv, nh, nv_img, nh_img)
-
-    uv_img_patch_scores = einops.rearrange(
-        uv_img_patch_scores,
-        "b v nv_uv nh_uv nv_img nh_img -> b nv_uv nh_uv (v nv_img nh_img)",
-    )
-
-    # 2nd order scoring: virtually extending patches to contain uv region and calculate mask mean
-    uv_patch_areas = einops.rearrange(uv_patch_masks.to(dtype), 'b v nv nh h w -> b v nv nh (h w)').sum(dim=-1)  # b v nv nh
-    uv_patch_bboxs = einops.rearrange(
-                        bounding_box(einops.rearrange(uv_patch_masks, 'b v nv nh h w -> (b v nv nh) h w')),
-                        '(b v nv nh) c -> b v nv nh c', b=b, v=v, nv=sqrt_n_patches, nh=sqrt_n_patches)  # b v nv nh 4
-    uv_patch_bboxs = einops.repeat(uv_patch_bboxs, 'b v nv_uv nh_uv c -> b v nv_uv nh_uv nv_img nh_img c', nv_img=n_imgpatches_v, nh_img=n_imgpatches_h)
-    img_patch_bbox_l = torch.arange(0, w_downsampled, downsampled_patch_size, device=device) 
-    img_patch_bbox_t = torch.arange(0, h_downsampled, downsampled_patch_size, device=device) 
-    img_patch_bbox_l = einops.repeat(img_patch_bbox_l, 'nh_img -> b v nv_uv nh_uv nv_img nh_img', b=b, v=v, nv_uv=sqrt_n_patches, nh_uv=sqrt_n_patches, nv_img=n_imgpatches_v, nh_img=n_imgpatches_h)
-    img_patch_bbox_t = einops.repeat(img_patch_bbox_t, 'nv_img -> b v nv_uv nh_uv nv_img nh_img', b=b, v=v, nv_uv=sqrt_n_patches, nh_uv=sqrt_n_patches, nv_img=n_imgpatches_v, nh_img=n_imgpatches_h)
-    img_patch_bboxs = torch.stack((img_patch_bbox_t, img_patch_bbox_l, img_patch_bbox_t + downsampled_patch_size-1,  img_patch_bbox_l + downsampled_patch_size-1), dim=-1)
-    union_bbxs = torch.stack(
-        (
-          torch.minimum(img_patch_bboxs[..., 0], uv_patch_bboxs[..., 0]),
-          torch.minimum(img_patch_bboxs[..., 1], uv_patch_bboxs[..., 1]),
-          torch.maximum(img_patch_bboxs[..., 2], uv_patch_bboxs[..., 2]),
-          torch.maximum(img_patch_bboxs[..., 3], uv_patch_bboxs[..., 3]),
-        ),
-        dim=-1
+  uv_img_patch_scores = (
+      einops.rearrange(
+          uv_patch_masks,
+          "b v nv_uv nh_uv (nv_img hpatch) (nh_img wpatch) -> b v nv_uv nh_uv"
+          " nv_img nh_img (hpatch wpatch)",
+          hpatch=downsampled_patch_size,
+          wpatch=downsampled_patch_size,
       )
-    union_areas = (union_bbxs[..., 2] - union_bbxs[..., 0] + 1) * (union_bbxs[..., 3] - union_bbxs[..., 1] + 1)
-    secondary_scores = einops.rearrange(uv_patch_areas, 'b v nv_uv nh_uv -> b v nv_uv nh_uv 1 1') / union_areas
-    secondary_scores = einops.rearrange(secondary_scores, 'b v nv_uv nh_uv nv_img nh_img -> b nv_uv nh_uv (v nv_img nh_img)')
-    uv_img_patch_scores = torch.maximum(uv_img_patch_scores, secondary_scores*.1)  # downweighting secondary score to prioritize first order score
-    return (uv_patch_masks if return_uv_patch_mask else None), uv_img_patch_scores
+      .to(dtype)
+      .mean(dim=-1)
+  )  # for every uv patch, matching scores of image patches (B, V, nv, nh, nv_img, nh_img)
 
-  # The views are scored independently, so they can be scored a few at a time: the intermediates (image patch x
-  # UV patch boxes, int64) take several GB per view at uv_res 1024. The scores are concatenated in view order.
-  chunk = v if views_per_chunk is None else views_per_chunk
-  scored = [view_patch_scores(uv_renders[:, i:i + chunk]) for i in range(0, v, chunk)]
-  uv_img_patch_scores = torch.cat([scores for _, scores in scored], dim=-1)
-  uv_patch_masks = torch.cat([masks for masks, _ in scored], dim=1) if return_uv_patch_mask else None
-  del scored
+  uv_img_patch_scores = einops.rearrange(
+      uv_img_patch_scores,
+      "b v nv_uv nh_uv nv_img nh_img -> b nv_uv nh_uv (v nv_img nh_img)",
+  )
+
+  # 2nd order scoring: virtually extending patches to contain uv region and calculate mask mean
+  uv_patch_areas = uv_patch_masks.sum(dim=(-2, -1)).to(dtype)  # b v nv nh; exact counts, as a sum in dtype gives
+  uv_patch_bboxs = einops.rearrange(
+                      bounding_box(einops.rearrange(uv_patch_masks, 'b v nv nh h w -> (b v nv nh) h w')),
+                      '(b v nv nh) c -> b v nv nh c', b=b, v=v, nv=sqrt_n_patches, nh=sqrt_n_patches)  # b v nv nh 4
+  # Union of each uv patch's box with each image patch's box. Its height depends only on the image patch row and
+  # its width only on the column, so they broadcast to the (b, v, nv_uv, nh_uv, nv_img, nh_img) areas without
+  # materializing boxes of that size (int32 holds any area of the downsampled image exactly).
+  uv_t, uv_l, uv_b, uv_r = (uv_patch_bboxs[..., i, None, None] for i in range(4))  # b v nv_uv nh_uv 1 1
+  img_patch_t = torch.arange(0, h_downsampled, downsampled_patch_size, device=device)[:, None]  # nv_img 1
+  img_patch_l = torch.arange(0, w_downsampled, downsampled_patch_size, device=device)[None, :]  # 1 nh_img
+  union_heights = (torch.maximum(img_patch_t + downsampled_patch_size - 1, uv_b)
+                   - torch.minimum(img_patch_t, uv_t) + 1).to(torch.int32)  # b v nv_uv nh_uv nv_img 1
+  union_widths = (torch.maximum(img_patch_l + downsampled_patch_size - 1, uv_r)
+                  - torch.minimum(img_patch_l, uv_l) + 1).to(torch.int32)  # b v nv_uv nh_uv 1 nh_img
+  union_areas = union_heights * union_widths
+  secondary_scores = einops.rearrange(uv_patch_areas, 'b v nv_uv nh_uv -> b v nv_uv nh_uv 1 1') / union_areas
+  secondary_scores = einops.rearrange(secondary_scores, 'b v nv_uv nh_uv nv_img nh_img -> b nv_uv nh_uv (v nv_img nh_img)')
+  uv_img_patch_scores = torch.maximum(uv_img_patch_scores, secondary_scores*.1)  # downweighting secondary score to prioritize first order score
 
 
   uv_img_patch_match_idcs = torch.argsort(
@@ -234,7 +207,7 @@ def get_img_uv_patch_correspondences(
   )[
       ..., :n_neighbors
   ].clone()  # idcs (flattened) of top n_neighbors matching image patches (B, nv_uv, nh_uv, n_neighbors);
-  # a copy, so that the full ranking (int64, 2 GB per 12-view frame at uv_res 1024) is freed
+  # a copy, so that the full ranking (int64, 1.9 GiB per 12-view frame at uv_res 1024) is freed
 
   uv_img_patch_match_scores = torch.gather(
       input=uv_img_patch_scores, index=uv_img_patch_match_idcs, dim=-1
