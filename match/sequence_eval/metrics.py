@@ -12,6 +12,7 @@ import torch
 
 from match.sequence_eval.context import FrameContext
 from match.utils import metric_util
+from match.utils.math_util import MM_PER_WORLD_UNIT
 
 
 class ImageMetric(NamedTuple):
@@ -51,7 +52,6 @@ JITTER_SOURCES = {
     'offset': 'MATCH offset (final minus TEMPEH part)',
     'final': 'Final position',
 }
-MM_PER_WORLD_UNIT = 1000  # the model's world coordinates are metres (datasets' SCALE_FACTOR converts mm to m)
 N_WORST_FRAMES = 3
 
 

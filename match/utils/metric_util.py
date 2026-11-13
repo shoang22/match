@@ -17,6 +17,8 @@ from typing import NamedTuple
 
 import torch
 
+from match.utils import math_util
+
 
 def _prepare(pred: torch.Tensor, real: torch.Tensor, mask: torch.Tensor):
     """Return pred, real as (1, C, H, W) float and mask as (1, 1, H, W) bool."""
@@ -334,5 +336,5 @@ def geometric_jitter(positions: torch.Tensor, valid: torch.Tensor = None) -> lis
         positions = positions[:, :, valid.to(positions.device)]
     if positions.shape[-1] == 0:
         return [math.nan] * max(positions.shape[0] - 2, 0)
-    second_diff = positions[2:] - 2 * positions[1:-1] + positions[:-2]  # (T-2, 3, N)
+    second_diff = math_util.second_difference(positions, dim=0)  # (T-2, 3, N)
     return second_diff.norm(dim=1).mean(dim=1).tolist()

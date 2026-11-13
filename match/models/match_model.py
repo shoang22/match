@@ -9,7 +9,7 @@ from match.models import image_feature_net
 from match.models.gsplat_renderer import gsplat_renderer
 from match.models.networks.attention import *
 from match.options import Options
-from match.utils import file_util, image_util, mesh_util, op_util, data_util, general_util, geo_util, uv_util
+from match.utils import file_util, image_util, mesh_util, op_util, data_util, general_util, geo_util, uv_util, math_util
 import torch
 from torch import nn
 from torch import Tensor
@@ -46,7 +46,7 @@ def temporal_trajectory_loss(trajectories: Tensor, texel_weights: Tensor | None 
   B, T, L, _ = trajectories.shape
   if T < 3:
     return trajectories.new_zeros(B)
-  second_diff = trajectories[:, 2:] - 2 * trajectories[:, 1:-1] + trajectories[:, :-2]  # (B, T-2, L, C)
+  second_diff = math_util.second_difference(trajectories, dim=1)  # (B, T-2, L, C)
   squared = second_diff.square().sum(dim=-1)  # (B, T-2, L)
   if texel_weights is None:
     return squared.mean(dim=(1, 2))
@@ -843,7 +843,8 @@ class MatchModel(nn.Module):
       trajectories = {
           k: einops.rearrange(v.float(), "(b t) 1 c l 1 -> b t l c", t=clip_len) for k, v in masked.items()}
       texel_weights = self.masked_gaussian_geometry_loss_weights
-      xyz_loss = temporal_trajectory_loss(trajectories["xyz"] * 1000.0, texel_weights)  # (n_clips,), mm^2
+      xyz_loss = temporal_trajectory_loss(
+          trajectories["xyz"] * math_util.MM_PER_WORLD_UNIT, texel_weights)  # (n_clips,), mm^2
       rgb_loss = temporal_trajectory_loss(trajectories["rgb"], texel_weights)
       loss = general_util.weight_loss(
           xyz_loss + self.opt.temporal_loss_rgb_weight * rgb_loss, weights, drop_zero_weights=True)

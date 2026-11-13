@@ -2,6 +2,19 @@
 
 import torch
 
+# The model's world coordinates are metres (the datasets' SCALE_FACTOR converts calibration mm to m).
+MM_PER_WORLD_UNIT = 1000.
+
+
+def second_difference(x: torch.Tensor, dim: int) -> torch.Tensor:
+  """x[t+1] - 2 x[t] + x[t-1] along `dim` (time), for t = 1 .. T-2: zero for constant and linear motion.
+  The result has T-2 entries along `dim` (none for T < 3), entry t for the frames (t, t+1, t+2)."""
+  def frames(start, stop):
+    index = [slice(None)] * x.ndim
+    index[dim] = slice(start, stop)
+    return x[tuple(index)]
+  return frames(2, None) - 2 * frames(1, -1) + frames(None, -2)
+
 
 def fix_nan(tensor: torch.Tensor, default_value: float = 1.0) -> torch.Tensor:
   """Fix NaNs in tensor and replace them with the provided default value."""
