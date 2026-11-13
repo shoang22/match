@@ -11,7 +11,9 @@ from exactly one window, at one slot:
 """
 from dataclasses import dataclass
 
-MODES = ('sliding', 'block')
+# The inference modes of a checkpoint: one forward pass per frame, or one of the windowed modes above.
+WINDOW_MODES = ('sliding', 'block')
+INFERENCE_MODES = ('per_frame',) + WINDOW_MODES
 
 
 @dataclass(frozen=True)
@@ -36,8 +38,8 @@ def window_slot(t: int, n_frames: int | None, clip_length: int, mode: str) -> Wi
     that window's end exist, it is frame t's window in any longer sequence too, so a predictor reading
     frames one by one can run it before it knows the sequence length.
     """
-    if mode not in MODES:
-        raise ValueError(f'Unknown windowed inference mode {mode!r}; expected one of {MODES}')
+    if mode not in WINDOW_MODES:
+        raise ValueError(f'Unknown windowed inference mode {mode!r}; expected one of {WINDOW_MODES}')
     if clip_length < 1:
         raise ValueError(f'Need a window of at least one frame, got {clip_length}')
     length = clip_length if n_frames is None else min(clip_length, n_frames)

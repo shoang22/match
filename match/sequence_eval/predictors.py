@@ -11,11 +11,8 @@ from typing import Callable, Iterable, Iterator, Protocol
 import torch
 
 from match.sequence_eval import texture_filter
-from match.sequence_eval.windows import window_slot
+from match.sequence_eval.windows import INFERENCE_MODES, window_slot
 from match.utils import clip_util
-
-INFERENCE_MODES = ('per_frame', 'sliding', 'block')
-
 
 def resolve_inference_mode(temporal: bool, inference_mode: str | None) -> str:
     """The inference mode to run: the one asked for, or by default 'sliding' for a temporal checkpoint and
