@@ -1,4 +1,4 @@
-"""Output contract of the sequence evaluation, checked on the smoke run, the full run and the flicker-only run.
+"""Output contract of the sequence evaluation, checked on the runs below.
 
 Smoke run: the first 3 frames of SEN_a_good_morrow_to_you_my_boy, held-out camera 402040.
 Full run: all 40 frames, held-out cameras 402040, 401905, 402031.
@@ -7,6 +7,8 @@ there are temporal and jitter scores but no image-quality scores.
 Temporal runs: the smoke run with temporal MATCH in sliding windows (3 frames, and 6 frames) and in block windows
 (6 frames). They must write everything a per-frame run writes; their extras are checked in
 test_eval_sequence_temporal_outputs.py.
+`background 1` runs: flicker-only on all 30 frames of the `background 1` capture (input camera 0 as the fixed view),
+with per-frame MATCH and with temporal MATCH in sliding windows.
 Each run's tests skip until it has been done (see eval_sequence_runs.py). The video content of the smoke and
 flicker-only runs is checked further in test_eval_sequence_smoketest.py.
 """
@@ -15,22 +17,22 @@ import math
 import pytest
 from PIL import Image
 
-from eval_sequence_runs import (FLICKER, FPS, FULL, IMAGE_METRICS_PLOT, PIX_FMT, PREVIEW_FPS, SMOKE, TEMPORAL_BLOCK6,
-                                TEMPORAL_SLIDING6, TEMPORAL_SMOKE, VIDEO_H, VIDEO_W, config_bindings, load_metrics,
-                                probe_video)
-from tce049 import FRAME_IDS_PER_SECOND, INPUT_CAMERA_IDS, REPO_ROOT
+from eval_sequence_runs import (BACKGROUND1_FLICKER, BACKGROUND1_TEMPORAL, FLICKER, FPS, FULL, IMAGE_METRICS_PLOT,
+                                PIX_FMT, PREVIEW_FPS, SMOKE, TEMPORAL_BLOCK6, TEMPORAL_SLIDING6, TEMPORAL_SMOKE,
+                                VIDEO_H, VIDEO_W, config_bindings, load_metrics, probe_video)
+from tce049 import REPO_ROOT
 
 # The spec's metrics and whether a higher value is better. Runs may record more.
 IMAGE_METRICS = {'psnr': True, 'ssim': True, 'lpips': False}
 TEMPORAL_SCORES = ['raw_flicker', 'flow_aligned_error']  # lower is better
 TEMPORAL_SOURCES = ['prediction', 'real']
 JITTER_SOURCES = ['tempeh', 'offset', 'final']  # final position = TEMPEH part + offset; lower is better
-# Raw TEMPEH per-vertex jitter on this segment is 1.2 to 5.9 mm per triple (mean 2.86 mm, from verts.npy).
-TEMPEH_JITTER_RANGE_MM = (0.5, 20.0)
 N_WORST_FRAMES = 3
+FLICKER_ONLY_RUNS = [FLICKER, BACKGROUND1_FLICKER, BACKGROUND1_TEMPORAL]
 
 
-@pytest.fixture(scope='module', params=[SMOKE, FULL, FLICKER, TEMPORAL_SMOKE, TEMPORAL_SLIDING6, TEMPORAL_BLOCK6],
+@pytest.fixture(scope='module', params=[SMOKE, FULL, FLICKER, TEMPORAL_SMOKE, TEMPORAL_SLIDING6, TEMPORAL_BLOCK6,
+                                         BACKGROUND1_FLICKER, BACKGROUND1_TEMPORAL],
                 ids=lambda run: run.name)
 def run(request):
     return request.param
@@ -64,7 +66,7 @@ def assert_summary(summary, values, higher_is_better):
 
 
 def test_grid_video_has_the_true_duration_at_24_fps(run, metrics):
-    assert metrics['video']['capture_fps'] == FRAME_IDS_PER_SECOND
+    assert metrics['video']['capture_fps'] == run.capture_fps
     stream, duration = probe_video(run.out_dir / metrics['video']['file'])
     assert stream['avg_frame_rate'] == f'{FPS}/1'
     assert (int(stream['width']), int(stream['height'])) == (VIDEO_W, VIDEO_H)
@@ -89,9 +91,9 @@ def test_every_grid_video_frame_records_its_source_frame(run, metrics):
     assert len(output_frames) == run.n_output_frames
     assert sorted(set(output_frames), key=int) == run.frames
     assert output_frames == sorted(output_frames, key=int)
-    # each source frame is held for 2/15 s = 3.2 output frames, rounded to 3 or 4
+    # each source frame is held for its spacing at 24 fps (Ava: 2/15 s = 3.2 output frames), rounded down or up
     holds = [output_frames.count(f) for f in run.frames]
-    assert all(h in (3, 4) for h in holds), holds
+    assert all(h in run.holds for h in holds), holds
 
 
 def test_grid_has_the_four_panels(run, metrics):
@@ -100,20 +102,21 @@ def test_grid_has_the_four_panels(run, metrics):
 
 def test_the_fixed_view_camera_and_whether_it_is_held_out_or_an_input_are_recorded(run, metrics):
     assert metrics['frames'] == run.frames
-    assert metrics['segments'] == ['SEN_a_good_morrow_to_you_my_boy']
+    assert metrics['segments'] == list(run.segments)
     assert metrics['heldout_cameras'] == run.heldout_cameras
     assert metrics['fixed_view_camera'] == run.fixed_view_camera
     assert metrics['fixed_view_kind'] == run.fixed_view_kind
 
 
-def test_a_flicker_only_run_has_no_image_quality_scores_and_its_fixed_view_is_an_input_camera():
-    metrics = load_metrics(FLICKER)
+@pytest.mark.parametrize('flicker_run', FLICKER_ONLY_RUNS, ids=lambda run: run.name)
+def test_a_flicker_only_run_has_no_image_quality_scores_and_its_fixed_view_is_an_input_camera(flicker_run):
+    metrics = load_metrics(flicker_run)
     assert metrics['heldout_cameras'] == []
     assert 'per_frame' not in metrics and 'summary' not in metrics
     assert IMAGE_METRICS_PLOT not in metrics['plots']
-    assert not (FLICKER.out_dir / IMAGE_METRICS_PLOT).exists()
+    assert not (flicker_run.out_dir / IMAGE_METRICS_PLOT).exists()
     assert metrics['fixed_view_kind'] == 'input'
-    assert all(FLICKER.fixed_view_camera in cameras for cameras in metrics['input_cameras'].values())
+    assert all(flicker_run.fixed_view_camera in cameras for cameras in metrics['input_cameras'].values())
 
 
 def test_image_metrics_are_finite_for_every_frame_and_heldout_camera(heldout_run, heldout_metrics):
@@ -180,15 +183,15 @@ def test_final_jitter_is_at_most_the_tempeh_plus_the_offset_jitter(metrics):
         assert entry['final'] <= entry['tempeh'] + entry['offset'] + 1e-3, (frame, entry)
 
 
-def test_tempeh_jitter_is_in_millimetres(metrics):
-    low, high = TEMPEH_JITTER_RANGE_MM
+def test_tempeh_jitter_is_in_millimetres(run, metrics):
+    low, high = run.tempeh_jitter_range_mm
     for frame, entry in metrics['jitter']['per_frame'].items():
         assert low <= entry['tempeh'] <= high, (frame, entry)
 
 
 def test_pretrained_model_with_the_12_standard_inputs_on_every_frame(run, metrics):
     assert metrics['model'] == {'path': 'assets/pretrained_models/match/uv_res_1024', 'checkpoint': '860000'}
-    assert metrics['input_cameras'] == {f: INPUT_CAMERA_IDS for f in run.frames}
+    assert metrics['input_cameras'] == {f: list(run.input_cameras) for f in run.frames}
 
 
 def test_plots_of_every_per_frame_metric_are_written(run, metrics):
