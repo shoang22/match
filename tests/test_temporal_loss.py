@@ -145,6 +145,15 @@ def test_the_temporal_loss_config_is_stage_1_temporal_match_plus_the_temporal_lo
 
 
 @needs_assets
+def test_the_temporal_loss_weighs_positions_and_colours_by_matchs_loss_convention():
+  # MATCH weighs squared-mm geometry losses at 1e-3 (xyz_weight, mesh_vert_weight) and colour losses at ~1
+  # (l1 0.8, lpips 1, ssim 0.2), so the trajectory loss's position term (mm^2) gets 1e-3 and its colour term 1.
+  opt = options(TEMPORAL_CONFIG)
+  assert opt.temporal_loss_weight == pytest.approx(1e-3)
+  assert opt.temporal_loss_weight * opt.temporal_loss_rgb_weight == pytest.approx(1.)
+
+
+@needs_assets
 def test_the_per_frame_config_fine_tunes_only_the_offset_head_of_per_frame_match_on_clips_with_the_temporal_loss():
   temporal, opt = options(TEMPORAL_CONFIG), options(PER_FRAME_CONFIG)
 
