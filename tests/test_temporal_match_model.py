@@ -138,3 +138,17 @@ def test_with_nonzero_temporal_weights_changing_one_frame_changes_the_others(fra
   for t in (1, 2):
     for k in ('xyz', 'rgb', 'rotation'):
       assert (after[k][:, t] - before[k][:, t]).abs().max() > 1e-4, f'{k} frame {t} did not change'
+
+
+@torch.no_grad()
+def test_a_clip_of_one_frame_gives_per_frame_match_even_with_trained_temporal_weights(frames):
+  model = build(temporal=True, clip_len=3)
+  randomize_temporal_parameters(model)
+  expected = per_frame_twin(model).forward_gaussians(as_batch(frames[0]))
+
+  clip_out = model.forward_gaussians(as_clip(frames[:1]))
+  frame_out = model.forward_gaussians(as_batch(frames[0]))
+
+  for k, v in expected.items():
+    torch.testing.assert_close(clip_out[k][:, 0], v, atol=ATOL, rtol=0, msg=k)
+    torch.testing.assert_close(frame_out[k], v, atol=ATOL, rtol=0, msg=k)
