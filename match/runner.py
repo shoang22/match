@@ -18,6 +18,7 @@ import lpips
 from absl import flags
 from match.options import Options
 from match import data, models
+from match.models import match_model
 from match.utils.log_experiment_util import TensorBoardLogger
 from match.utils import general_util, vis_util, log_console_util, data_util
 import gin
@@ -316,6 +317,7 @@ class MatchRunner:
                     self.model,
                     self.accelerator,
                     strict=self.opt.load_pretrained_model_strict,
+                    allow_missing=match_model.checkpoint_allow_missing(self.opt),
                 )
         self.pretrained_model_iter = ckpt_iter
         return self.model, ckpt_iter
