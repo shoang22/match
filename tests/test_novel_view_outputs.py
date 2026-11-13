@@ -138,7 +138,8 @@ def test_temporal_match_at_initialization_scores_the_same_as_per_frame_match(per
         for name in IMAGE_SCORES:
             assert b[name] == pytest.approx(a[name], abs=TOLERANCE[name]), (a['frame'], a['target_camera'], name)
         for name in ERROR_SCORES:
-            assert b[name] == pytest.approx(a[name], rel=RELATIVE_TOLERANCE[name]), (a['frame'], a['target_camera'], name)
+            assert b[name] == pytest.approx(a[name], rel=RELATIVE_TOLERANCE[name]), (
+                a['frame'], a['target_camera'], name)
 
 
 @pytest.mark.parametrize('run', [PER_FRAME, FULL_PER_FRAME], ids=lambda r: r.name)

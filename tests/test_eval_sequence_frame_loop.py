@@ -12,7 +12,7 @@ import pytest
 import torch
 
 from match.sequence_eval.context import SequencePlan
-from match.sequence_eval.predictors import PredictedFrame
+from match.sequence_eval.predictors import PredictedFrame, WindowCameraError
 import eval_sequence_script
 
 H, W = 8, 8
@@ -25,15 +25,20 @@ eval_sequence = eval_sequence_script.load()
 
 
 class Sequence(torch.utils.data.Dataset):
-    """Synthetic SequenceFrames: one held-out camera, and a 'value' that identifies the frame."""
+    """Synthetic SequenceFrames: one held-out camera, and a 'value' that identifies the frame. Frame i's input cameras
+    are 100 * i .. 100 * i + 11, or the same on every frame with same_inputs."""
     heldout_camera_ids = [CAMERA]
     frame_ids = FRAMES
+
+    def __init__(self, same_inputs=False):
+        self.same_inputs = same_inputs
 
     def __len__(self):
         return len(FRAMES)
 
     def __getitem__(self, i):
-        return {'frame': FRAMES[i], 'camera': torch.arange(12) + 100 * i, 'value': torch.tensor(float(i)),
+        cameras = torch.arange(12) + (0 if self.same_inputs else 100 * i)
+        return {'frame': FRAMES[i], 'camera': cameras, 'value': torch.tensor(float(i)),
                 'extra_C2W': torch.eye(4)[None], 'extra_fxfycxcy': torch.tensor([[1.0, 1.0, 0.5, 0.5]]),
                 'extra_image': torch.zeros(1, 3, H, W), 'extra_mask': torch.ones(1, 1, H, W)}
 
@@ -187,9 +192,9 @@ def make_temporal_runner(clip_length=2):
     return runner
 
 
-def run_temporal_predictor(runner):
+def run_temporal_predictor(runner, same_inputs=True):
     predictor = eval_sequence.build_predictor(runner)
-    plan = SequencePlan(Sequence(), schedule=SCHEDULE, fixed_view_camera=CAMERA)
+    plan = SequencePlan(Sequence(same_inputs), schedule=SCHEDULE, fixed_view_camera=CAMERA)
     collector, panel, video, preview = Recorder(), Recorder(), Recorder(), Recorder()
     keys = []
     collector.add_frame = lambda ctx: (keys.append(set(ctx.gaussians)), Recorder.add_frame(collector, ctx))
@@ -250,3 +255,11 @@ def test_the_config_marks_the_checkpoint_as_temporal(config):
 
     config('TEMPORAL = True')
     assert Options().temporal is True
+
+
+@needs_assets
+def test_a_windowed_run_fails_loudly_when_the_frames_of_a_window_have_different_input_cameras(config):
+    config()
+
+    with pytest.raises(WindowCameraError, match='different input cameras'):
+        run_temporal_predictor(make_temporal_runner(), same_inputs=False)

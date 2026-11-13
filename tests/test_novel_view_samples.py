@@ -47,6 +47,14 @@ def test_runs_end_at_sequence_boundaries():
         ('B', ('5', '6', '7', '8'))] * 4
 
 
+
+def test_runs_end_where_the_input_cameras_change_so_every_window_has_one_camera_selection():
+    # A temporal window aligns image tokens by input camera: from frame 5 on, camera 'b' is replaced by 'c'.
+    sequence = frames('seq', ['1', '2', '3', '4']) + frames('seq', ['5', '6', '7', '8'], inputs=('a', 'c'))
+    plan = plan_samples({'S1': sequence}, all_targets, n_samples=100, seed=0, context_length=4)
+
+    assert [s.run for s in plan.samples] == [('1', '2', '3', '4')] * 4 + [('5', '6', '7', '8')] * 4
+
 def test_the_same_seed_gives_the_same_test_frames_and_targets_and_another_seed_others():
     captures = {'S1': frames('A', [str(i) for i in range(40)]), 'S2': frames('B', [str(i) for i in range(100, 140)])}
 
@@ -67,20 +75,16 @@ def test_samples_keep_frame_list_order():
     assert [s.frame for s in samples] == sorted(s.frame for s in samples)
 
 
-def test_the_target_camera_is_never_an_input_of_any_frame_of_the_test_frames_window():
-    # Frame 3 uses x as an input. Sliding windows of 4 over frames 1-7: 1-4, 1-4, 2-5, 3-6, then 4-7 for frames 5-7.
-    captures = {'S1': [FrameInputs(f, 'seq', ('a', 'x') if f == '3' else INPUTS) for f in '1234567']}
+def test_the_target_camera_is_never_an_input_of_the_test_frames_window():
+    # every frame of a run (so of a window) has the same inputs, here a and x
+    captures = {'S1': frames('seq', '1234567', inputs=('a', 'x'))}
 
     def targets(subject, frame):
         return ['x', 'y']
 
-    later_targets = set()
     for seed in range(20):
-        by_frame = {s.frame: s.target_camera
-                    for s in plan_samples(captures, targets, n_samples=7, seed=seed, context_length=4).samples}
-        assert [by_frame[f] for f in '1234'] == ['y'] * 4
-        later_targets |= {by_frame[f] for f in '567'}
-    assert later_targets == {'x', 'y'}  # x is allowed once frame 3 is outside the window
+        samples = plan_samples(captures, targets, n_samples=7, seed=seed, context_length=4).samples
+        assert [s.target_camera for s in samples] == ['y'] * 7
 
 
 def test_targets_come_only_from_the_cameras_available_for_the_test_frame():

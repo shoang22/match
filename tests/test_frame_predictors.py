@@ -6,12 +6,16 @@ Run: CUDA_VISIBLE_DEVICES= conda run -n match python -m pytest -q tests/test_fra
 import pytest
 import torch
 
-from match.sequence_eval.predictors import PerFramePredictor, TextureFilterPredictor, WindowedPredictor
+from match.sequence_eval.predictors import (PerFramePredictor, TextureFilterPredictor, WindowCameraError,
+                                            WindowedPredictor)
 from match.sequence_eval.texture_filter import filter_textures
 
 
-def make_batches(n):
-    return [{'frame': [f'{i:06d}'], 'value': torch.full((1, 1), float(i))} for i in range(n)]
+def make_batches(n, cameras=None):
+    """n frames' batches (B=1); cameras: each frame's input camera IDs (by default the same two on every frame)."""
+    cameras = cameras or [[1, 2]] * n
+    return [{'frame': [f'{i:06d}'], 'value': torch.full((1, 1), float(i)), 'camera': torch.tensor([cameras[i]])}
+            for i in range(n)]
 
 
 def test_per_frame_predictor_emits_every_frame_from_its_own_forward_pass_in_order():
@@ -150,3 +154,14 @@ def test_windowed_predictor_records_the_mode_and_each_frames_window_start_and_sl
     starts = {'sliding': [0, 0, 1, 1, 1], 'block': [0, 0, 0, 0, 1]}[mode]
     assert inference['per_frame'] == {
         f'{t:06d}': {'window_start': s, 'window_start_frame': f'{s:06d}', 'slot': t - s} for t, s in enumerate(starts)}
+
+
+@pytest.mark.parametrize('mode', ['sliding', 'block'])
+def test_a_window_whose_frames_have_different_input_cameras_fails_loudly(mode):
+    # Image tokens are aligned by camera and pixel patch position across a clip, so every frame of a window must
+    # have the same input cameras in the same order. Frame 2 lost camera 2 here.
+    cameras = [[1, 2], [1, 2], [1, 3], [1, 2], [1, 2]]
+    predictor = WindowedPredictor(ClipModel(), clip_length=4, mode=mode)
+
+    with pytest.raises(WindowCameraError, match=r"000002.*\[1, 3\]"):
+        list(predictor.predict(make_batches(5, cameras)))
