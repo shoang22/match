@@ -109,6 +109,14 @@ class BaseSingleCaptureDataset(torch.utils.data.Dataset):
             clip_stride: in clip mode, the number of frame-list entries between consecutive frames of a clip.
         '''
         super().__init__()
+        if clip_length is not None:
+            if clip_length < 1:
+                raise ValueError(f'clip_length must be at least 1 (or None for single frames), got {clip_length}')
+            if clip_stride < 1:
+                raise ValueError(f'clip_stride must be at least 1, got {clip_stride}')
+            if frame_stride != 1:
+                raise ValueError(f'frame_stride={frame_stride} strides the whole frame list, across sequence '
+                                 f'boundaries; in clip mode keep frame_stride=1 and set clip_stride instead')
         self.clip_length = clip_length
         self.clip_stride = clip_stride
         self.nframes = nframes

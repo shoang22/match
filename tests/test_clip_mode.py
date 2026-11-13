@@ -91,6 +91,18 @@ def test_a_clip_that_cannot_load_moves_on_to_the_next_clip_like_a_single_frame_d
     assert dataset[2]['frame'] == ['000000', '000001']
 
 
+@pytest.mark.parametrize('settings, message', [
+    (dict(clip_length=0), 'clip_length'),
+    (dict(clip_length=2, clip_stride=0), 'clip_stride'),
+    # frame_stride strides the whole frame list, across segment boundaries; clips use clip_stride instead
+    (dict(clip_length=2, frame_stride=2), 'frame_stride'),
+])
+def test_invalid_clip_settings_are_rejected_naming_the_setting(tmp_path, settings, message):
+    capture = synth.write_capture(tmp_path / 'capture', tmp_path / 'masks', nframes=3)
+    with pytest.raises(ValueError, match=message):
+        build_calibrated(capture, **settings)
+
+
 from tce049 import AVA_ROOT, SEGMENT, SEGMENT_FRAMES  # noqa: E402
 
 needs_ava_data = pytest.mark.skipif(
