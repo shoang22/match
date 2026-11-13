@@ -110,7 +110,8 @@ class Options:
   ## Temporal MATCH (divided space-time attention over UV tokens)
   # Adds a temporal attention sublayer to every block. Off: the model and its checkpoints are per-frame MATCH.
   temporal: bool = False
-  clip_len: int = 4  # frame slots of the frame embedding: the longest clip the temporal model accepts
+  # frame slots of the frame embedding: the longest clip the temporal model accepts (datasets: clip_length)
+  clip_length: int = 4
   # With `temporal`, only the temporal parameters train; everything else has gradients disabled.
   temporal_freeze_spatial: bool = True
 

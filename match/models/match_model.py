@@ -90,7 +90,7 @@ class MatchModel(nn.Module):
         opt.num_heads,
         llama_style=opt.llama_style,
         temporal=opt.temporal,
-        clip_len=opt.clip_len,
+        clip_len=opt.clip_length,
     )
     if opt.grad_checkpoint:
       self.transformer.set_grad_checkpointing()

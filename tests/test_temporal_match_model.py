@@ -35,6 +35,7 @@ def tiny_options(**overrides) -> Options:
       segmentation_labels_path='assets/sapiens/segmentation_labels.json',
   )
   for k, v in overrides.items():
+    assert hasattr(opt, k), f'Options has no field {k}'
     setattr(opt, k, v)
   return opt
 
@@ -98,7 +99,7 @@ def frames():
 
 @torch.no_grad()
 def test_at_init_each_frame_of_a_clip_equals_per_frame_match(frames):
-  temporal = build(temporal=True, clip_len=3)
+  temporal = build(temporal=True, clip_length=3)
   per_frame = per_frame_twin(temporal)
 
   clip_out = temporal.forward_gaussians(as_clip(frames))
@@ -128,7 +129,7 @@ def randomize_temporal_parameters(model: MatchModel, seed=1):
 
 @torch.no_grad()
 def test_with_nonzero_temporal_weights_changing_one_frame_changes_the_others(frames):
-  model = build(temporal=True, clip_len=3)
+  model = build(temporal=True, clip_length=3)
   randomize_temporal_parameters(model)
 
   before = model.forward_gaussians(as_clip(frames))
@@ -145,7 +146,7 @@ def test_with_nonzero_temporal_weights_changing_one_frame_changes_the_others(fra
 
 @torch.no_grad()
 def test_a_clip_of_one_frame_gives_per_frame_match_even_with_trained_temporal_weights(frames):
-  model = build(temporal=True, clip_len=3)
+  model = build(temporal=True, clip_length=3)
   randomize_temporal_parameters(model)
   expected = per_frame_twin(model).forward_gaussians(as_batch(frames[0]))
 
@@ -158,7 +159,7 @@ def test_a_clip_of_one_frame_gives_per_frame_match_even_with_trained_temporal_we
 
 
 def test_only_the_temporal_parameters_train():
-  model = build(temporal=True, clip_len=3)
+  model = build(temporal=True, clip_length=3)
   per_frame_names = set(build(temporal=False).state_dict())
   temporal_names = {n for n, _ in model.named_parameters()} - per_frame_names
   trainable = {n for n, p in model.named_parameters() if p.requires_grad}
@@ -173,7 +174,7 @@ def test_only_the_temporal_parameters_train():
 
 @pytest.mark.parametrize('grad_checkpoint', [False, True])
 def test_a_clip_loss_backpropagates_into_the_temporal_output_projections_only(frames, grad_checkpoint):
-  model = build(temporal=True, clip_len=3, grad_checkpoint=grad_checkpoint).train()
+  model = build(temporal=True, clip_length=3, grad_checkpoint=grad_checkpoint).train()
 
   model.forward_gaussians(as_clip(frames))['xyz'].square().mean().backward()
 
@@ -207,7 +208,7 @@ def load_pretrained(model: MatchModel, folder: Path, strict: bool):
 def test_a_per_frame_checkpoint_loads_into_the_temporal_model_with_fresh_temporal_parameters(tmp_path, strict):
   per_frame = build(seed=1, temporal=False)
   folder = save_checkpoint(per_frame.state_dict(), tmp_path / 'ckpt')
-  model = build(seed=2, temporal=True, clip_len=3)
+  model = build(seed=2, temporal=True, clip_length=3)
   fresh = {k: v.clone() for k, v in model.state_dict().items() if k not in per_frame.state_dict()}
 
   load_pretrained(model, folder, strict)
@@ -226,7 +227,7 @@ def test_an_unexpected_non_temporal_key_fails_the_temporal_load(tmp_path, strict
   folder = save_checkpoint(state, tmp_path / 'ckpt')
 
   with pytest.raises(Exception, match='attn.extra.weight'):
-    load_pretrained(build(temporal=True, clip_len=3), folder, strict)
+    load_pretrained(build(temporal=True, clip_length=3), folder, strict)
 
 
 @pytest.mark.parametrize('strict', [True, False])
@@ -236,7 +237,7 @@ def test_a_missing_non_temporal_key_fails_the_temporal_load(tmp_path, strict):
   folder = save_checkpoint(state, tmp_path / 'ckpt')
 
   with pytest.raises(Exception, match='out_xyz.weight'):
-    load_pretrained(build(temporal=True, clip_len=3), folder, strict)
+    load_pretrained(build(temporal=True, clip_length=3), folder, strict)
 
 
 PRETRAINED = Path('assets/pretrained_models/match/uv_res_1024')
@@ -272,7 +273,7 @@ def pretrained_options(monkeypatch):
 def test_the_pretrained_checkpoint_loads_into_temporal_match(pretrained_options):
   opt = pretrained_options
   assert opt.load_pretrained_model_strict is False  # the shipped config; the temporal load is strict anyway
-  opt.temporal, opt.clip_len = True, 4
+  opt.temporal, opt.clip_length = True, 4
   model = MatchModel(opt)
   folder = general_util.get_ckpt_path(str(PRETRAINED / 'checkpoints'), -1)
 
