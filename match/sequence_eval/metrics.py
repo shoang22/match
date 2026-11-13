@@ -190,7 +190,7 @@ class TexelRegion(NamedTuple):
 
 
 class GeometricJitter:
-    """Frame-to-frame jitter of every texel's predicted position, split into the TEMPEH part and MATCH's offset.
+    """Frame-to-frame jitter of the predicted texel positions, split into the TEMPEH part and MATCH's offset.
 
     A texel's final position is the TEMPEH surface point at the texel ('tempeh_xyz' in the Gaussians, see
     MatchModel.forward_gaussians(return_tempeh_xyz=True)) plus the predicted offset. For each of the three,
