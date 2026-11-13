@@ -43,8 +43,8 @@ def per_frame_twin(temporal_model):
   return model
 
 
-def loss(model, batch) -> torch.Tensor:
-  return model.compute_loss(batch, lpips_loss=None, step=1)['loss']
+def loss(model, batch, lpips_loss=None) -> torch.Tensor:
+  return model.compute_loss(batch, lpips_loss=lpips_loss, step=1)['loss']
 
 
 def to(batch: dict, device: str) -> dict:
@@ -63,20 +63,30 @@ def test_the_loss_on_a_clip_is_the_sum_of_per_frame_matchs_losses_on_its_frames(
   torch.testing.assert_close(loss(temporal, to(as_clip(frames), device)), expected, atol=1e-5, rtol=1e-5)
 
 
-def clip_loss_and_grads(frames, grad_checkpoint):
+def clip_loss_and_grads(frames, grad_checkpoint, losses, device, lpips_loss):
   from test_temporal_match_model import randomize_temporal_parameters
-  model = build(temporal=True, clip_length=3, grad_checkpoint=grad_checkpoint, **GEOMETRY_LOSSES)
+  model = build(temporal=True, clip_length=3, grad_checkpoint=grad_checkpoint, **losses).to(device)
   randomize_temporal_parameters(model)
   model.train()
-  torch.manual_seed(0)  # the same random input and render views in both runs
-  value = loss(model, as_clip(frames))
+  torch.manual_seed(0)  # the same random input and render views and background colour in both runs
+  value = loss(model, to(as_clip(frames), device), lpips_loss)
   value.backward()
   return value.detach(), {n: p.grad for n, p in model.named_parameters() if p.requires_grad}
 
 
-def test_gradient_checkpointing_does_not_change_a_clip_loss_or_its_gradients(frames):
-  expected_loss, expected_grads = clip_loss_and_grads(frames, grad_checkpoint=False)
-  value, grads = clip_loss_and_grads(frames, grad_checkpoint=True)
+@pytest.fixture(scope='module')
+def lpips_vgg():
+  import lpips
+  return lpips.LPIPS(net='vgg', verbose=False).requires_grad_(False).eval()
+
+
+@pytest.mark.parametrize('losses, device', [
+    (GEOMETRY_LOSSES, 'cpu'), pytest.param(dict(ALL_LOSSES, lpips_weight=[1.]), 'cuda', marks=needs_cuda)],
+    ids=['geometry', 'all'])
+def test_gradient_checkpointing_does_not_change_a_clip_loss_or_its_gradients(frames, losses, device, request):
+  lpips_loss = request.getfixturevalue('lpips_vgg').to(device) if device == 'cuda' else None
+  expected_loss, expected_grads = clip_loss_and_grads(frames, False, losses, device, lpips_loss)
+  value, grads = clip_loss_and_grads(frames, True, losses, device, lpips_loss)
 
   torch.testing.assert_close(value, expected_loss, atol=1e-6, rtol=1e-5)
   assert grads.keys() == expected_grads.keys()

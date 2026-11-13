@@ -1100,7 +1100,14 @@ class MatchModel(nn.Module):
       gt_img_lpips = images * loss_mask
       gt_img_lpips = einops.rearrange(gt_img_lpips, "b v c h w -> (b v) c h w")
       gt_img_lpips = gt_img_lpips * 2.0 - 1.0
-      loss_lpips = lpips_loss(pred_img_lpips, gt_img_lpips)
+      if self.opt.grad_checkpoint and torch.is_grad_enabled():
+        # one image at a time, checkpointed: LPIPS scores each image on its own, and its VGG activations for
+        # backward take ~0.6 GiB per 640x512 image (7.6 GiB for 12 render views at once)
+        loss_lpips = torch.cat([
+            torch.utils.checkpoint.checkpoint(lpips_loss, pred, gt, use_reentrant=False)
+            for pred, gt in zip(pred_img_lpips.split(1), gt_img_lpips.split(1))])
+      else:
+        loss_lpips = lpips_loss(pred_img_lpips, gt_img_lpips)
       loss_lpips = einops.rearrange(
           loss_lpips, "(b v) c h w -> b v (c h w)", b=B, v=V
       )
