@@ -17,10 +17,9 @@ from pathlib import Path
 
 import pytest
 
-from eval_sequence_runs import FULL, load_metrics as load_sequence_metrics
+# TOLERANCE: ~3x the run-to-run and batch-size noise floors measured for the sequence evaluation (#35).
+from eval_sequence_runs import FULL, TOLERANCE, load_metrics as load_sequence_metrics
 from tce049 import HELDOUT_CAMERAS, INPUT_CAMERA_IDS, REPO_ROOT, SEGMENT, SEGMENT_FRAMES
-# ~3x the run-to-run and batch-size noise floors measured for the sequence evaluation (#35); see that module.
-from test_eval_sequence_temporal_outputs import TOLERANCE
 
 SECTIONS = ['model', 'protocol', 'inference', 'summary', 'samples']
 SCORES = ['psnr', 'ssim', 'lpips']

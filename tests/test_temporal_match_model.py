@@ -2,7 +2,7 @@
 loading the pretrained checkpoint into it.
 
 The forward tests build a tiny model (64x64 UV grid, one block pair, 2 views of 32x24 pixels, no Sapiens) and
-feed it synthetic inputs on CPU. They need assets/ for the template mesh. The checkpoint test builds the
+feed it synthetic inputs on CPU (tests/tiny_match.py). They need assets/ for the template mesh. The checkpoint test builds the
 full-size pretrained configuration (~40 s on CPU) and loads assets/pretrained_models/match/uv_res_1024.
 
     CUDA_VISIBLE_DEVICES= conda run -n match python -m pytest -q tests/test_temporal_match_model.py
@@ -16,125 +16,38 @@ import torch
 if not Path('assets').exists():
     pytest.skip('assets/ is missing; see the worktree section of CLAUDE.md', allow_module_level=True)
 
-from safetensors.torch import load_file, save_file  # noqa: E402
+from safetensors.torch import load_file  # noqa: E402
 
 from match.models.match_model import MatchModel, checkpoint_allow_missing  # noqa: E402
 from match.options import Options  # noqa: E402
 from match.utils import general_util  # noqa: E402
-
-N_VIEWS = 2
-HEIGHT, WIDTH = 32, 24
-ATOL = 1e-5
-
-
-def tiny_options(**overrides) -> Options:
-  opt = Options(
-      uv_res=64, uv_patch_size=16, img_patch_size=8, dim=32, num_heads=2, num_blocks=1,
-      n_neighbors=4, num_input_views=N_VIEWS, input_res=HEIGHT, input_bg='white',
-      use_sapiens_features=False, skip_connection=True, grad_checkpoint=False,
-      segmentation_labels_path='assets/sapiens/segmentation_labels.json',
-  )
-  for k, v in overrides.items():
-    assert hasattr(opt, k), f'Options has no field {k}'
-    setattr(opt, k, v)
-  return opt
-
-
-def build(seed=0, **overrides) -> MatchModel:
-  torch.manual_seed(seed)
-  return MatchModel(tiny_options(**overrides)).eval()
-
-
-def per_frame_twin(temporal_model: MatchModel) -> MatchModel:
-  """Per-frame MATCH with the temporal model's spatial weights."""
-  model = build(temporal=False)
-  missing, unexpected = model.load_state_dict(temporal_model.state_dict(), strict=False)
-  assert not missing
-  return model
-
-
-def look_at_origin(position):
-  """Camera-to-world matrix (OpenCV axes: x right, y down, z forward) for a camera at `position`."""
-  position = torch.tensor(position, dtype=torch.float32)
-  forward = -position / position.norm()
-  right = torch.linalg.cross(forward, torch.tensor([0., -1., 0.]))
-  right = right / right.norm()
-  down = torch.linalg.cross(forward, right)
-  c2w = torch.eye(4)
-  c2w[:3, 0], c2w[:3, 1], c2w[:3, 2], c2w[:3, 3] = right, down, forward, position
-  return c2w
-
-
-def synthetic_frame(num_verts, seed) -> dict:
-  """One frame of inputs for N_VIEWS cameras around the origin, unbatched (as a dataset returns it)."""
-  g = torch.Generator().manual_seed(seed)
-  uv = torch.rand(N_VIEWS, 3, HEIGHT, WIDTH, generator=g)
-  uv[:, 2] = 1.  # every pixel shows the surface
-  return {
-      'image': torch.rand(N_VIEWS, 3, HEIGHT, WIDTH, generator=g),
-      'mask': torch.ones(N_VIEWS, 1, HEIGHT, WIDTH),
-      'uv': uv,
-      'C2W': torch.stack([look_at_origin([0.3, 0., 1.]), look_at_origin([-0.3, 0., 1.])]),
-      'fxfycxcy': torch.tensor([[30., 30., WIDTH / 2, HEIGHT / 2]] * N_VIEWS),
-      'coarse_verts': 0.1 * torch.randn(num_verts, 3, generator=g),
-      'verts': torch.zeros(num_verts, 3),
-      'idindex': torch.tensor(seed),
-  }
-
-
-def as_batch(frame: dict) -> dict:
-  return {k: v[None] for k, v in frame.items()}
-
-
-def as_clip(frames: list[dict]) -> dict:
-  """A batch of one clip: every tensor stacked on a time axis after the batch axis."""
-  return {k: torch.stack([f[k] for f in frames])[None] for k in frames[0]}
-
-
-@pytest.fixture(scope='module')
-def frames():
-  num_verts = build(temporal=False).num_verts
-  return [synthetic_frame(num_verts, seed) for seed in range(3)]
+from tiny_match import (  # noqa: E402
+    ATOL, as_batch, as_clip, build, load_pretrained, per_frame_twin, randomize_temporal_parameters, save_checkpoint,
+    temporal_parameter_names)
 
 
 @torch.no_grad()
-def test_at_init_each_frame_of_a_clip_equals_per_frame_match(frames):
+def test_at_init_each_frame_of_a_clip_equals_per_frame_match(tiny_frames):
   temporal = build(temporal=True, clip_length=3)
   per_frame = per_frame_twin(temporal)
 
-  clip_out = temporal.forward_gaussians(as_clip(frames), return_tempeh_xyz=True)
+  clip_out = temporal.forward_gaussians(as_clip(tiny_frames), return_tempeh_xyz=True)
 
-  for t, frame in enumerate(frames):
+  for t, frame in enumerate(tiny_frames):
     expected = per_frame.forward_gaussians(as_batch(frame), return_tempeh_xyz=True)
     assert 'tempeh_xyz' in expected
     for k, v in expected.items():
-      assert clip_out[k].shape == (1, len(frames)) + v.shape[1:], k
+      assert clip_out[k].shape == (1, len(tiny_frames)) + v.shape[1:], k
       torch.testing.assert_close(clip_out[k][:, t], v, atol=ATOL, rtol=0, msg=f'{k} frame {t}')
 
 
-def temporal_parameter_names(temporal_model: MatchModel) -> set[str]:
-  """Parameters the temporal model has and per-frame MATCH doesn't."""
-  per_frame_names = set(build(temporal=False).state_dict())
-  return {n for n, _ in temporal_model.named_parameters()} - per_frame_names
-
-
-def randomize_temporal_parameters(model: MatchModel, seed=1):
-  g = torch.Generator().manual_seed(seed)
-  names = temporal_parameter_names(model)
-  assert names, 'the temporal model has no temporal parameters'
-  with torch.no_grad():
-    for n, p in model.named_parameters():
-      if n in names:
-        p.copy_(0.5 * torch.randn(p.shape, generator=g))
-
-
 @torch.no_grad()
-def test_with_nonzero_temporal_weights_changing_one_frame_changes_the_others(frames):
+def test_with_nonzero_temporal_weights_changing_one_frame_changes_the_others(tiny_frames):
   model = build(temporal=True, clip_length=3)
   randomize_temporal_parameters(model)
 
-  before = model.forward_gaussians(as_clip(frames))
-  changed = copy.deepcopy(frames)
+  before = model.forward_gaussians(as_clip(tiny_frames))
+  changed = copy.deepcopy(tiny_frames)
   changed[0]['image'] = 1. - changed[0]['image']
   changed[0]['coarse_verts'] = changed[0]['coarse_verts'] * 1.1
   after = model.forward_gaussians(as_clip(changed))
@@ -146,13 +59,13 @@ def test_with_nonzero_temporal_weights_changing_one_frame_changes_the_others(fra
 
 
 @torch.no_grad()
-def test_a_clip_of_one_frame_gives_per_frame_match_even_with_trained_temporal_weights(frames):
+def test_a_clip_of_one_frame_gives_per_frame_match_even_with_trained_temporal_weights(tiny_frames):
   model = build(temporal=True, clip_length=3)
   randomize_temporal_parameters(model)
-  expected = per_frame_twin(model).forward_gaussians(as_batch(frames[0]))
+  expected = per_frame_twin(model).forward_gaussians(as_batch(tiny_frames[0]))
 
-  clip_out = model.forward_gaussians(as_clip(frames[:1]))
-  frame_out = model.forward_gaussians(as_batch(frames[0]))
+  clip_out = model.forward_gaussians(as_clip(tiny_frames[:1]))
+  frame_out = model.forward_gaussians(as_batch(tiny_frames[0]))
 
   for k, v in expected.items():
     torch.testing.assert_close(clip_out[k][:, 0], v, atol=ATOL, rtol=0, msg=k)
@@ -174,10 +87,10 @@ def test_only_the_temporal_parameters_train():
 
 
 @pytest.mark.parametrize('grad_checkpoint', [False, True])
-def test_a_clip_loss_backpropagates_into_the_temporal_output_projections_only(frames, grad_checkpoint):
+def test_a_clip_loss_backpropagates_into_the_temporal_output_projections_only(tiny_frames, grad_checkpoint):
   model = build(temporal=True, clip_length=3, grad_checkpoint=grad_checkpoint).train()
 
-  model.forward_gaussians(as_clip(frames))['xyz'].square().mean().backward()
+  model.forward_gaussians(as_clip(tiny_frames))['xyz'].square().mean().backward()
 
   grads = {n: p.grad for n, p in model.named_parameters()}
   # At init the zero output projections are the only temporal weights with a gradient: they gate the rest.
@@ -190,19 +103,6 @@ def test_a_clip_loss_backpropagates_into_the_temporal_output_projections_only(fr
 def test_per_frame_match_trains_every_parameter():
   model = build(temporal=False)
   assert all(p.requires_grad for p in model.parameters())
-
-
-def save_checkpoint(state_dict: dict, folder: Path) -> Path:
-  """A checkpoint folder as the runner saves it (model.safetensors)."""
-  folder.mkdir(parents=True)
-  save_file({k: v.contiguous() for k, v in state_dict.items()}, str(folder / 'model.safetensors'))
-  return folder
-
-
-def load_pretrained(model: MatchModel, folder: Path, strict: bool):
-  """Loads a checkpoint the way MatchRunner.load_checkpoint does for this model."""
-  return general_util.load_ckpt(str(folder), model, strict=strict,
-                                allow_missing=checkpoint_allow_missing(model.opt))
 
 
 @pytest.mark.parametrize('strict', [True, False])
@@ -311,10 +211,10 @@ def test_folding_a_collated_clip_batch_makes_every_frame_a_sample():
   from torch.utils.data import default_collate
   from match.utils.data_util import MatchBatch
 
-  def clip(subject, frames):  # what a dataset in clip mode returns
-    return {'image': torch.stack([torch.full((2, 3, 4, 4), float(f)) for f in frames]),
-            'scene_scale': torch.tensor([float(f) for f in frames]),
-            'frame': [str(f) for f in frames], 'subject': subject}
+  def clip(subject, tiny_frames):  # what a dataset in clip mode returns
+    return {'image': torch.stack([torch.full((2, 3, 4, 4), float(f)) for f in tiny_frames]),
+            'scene_scale': torch.tensor([float(f) for f in tiny_frames]),
+            'frame': [str(f) for f in tiny_frames], 'subject': subject}
 
   batch = MatchBatch(default_collate([clip('A', [1, 2, 3]), clip('B', [7, 8, 9])]))
   folded, clip_len = batch.fold_clip()

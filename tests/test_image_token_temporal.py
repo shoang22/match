@@ -1,7 +1,7 @@
 """Pixel-aligned ablation (#39): a temporal sublayer over image tokens as well as UV tokens, switched on by
 `Options.temporal_image_tokens`. One temporal sequence per (camera, image patch position).
 
-Reuses the tiny CPU model of test_temporal_match_model.py (64x64 UV grid, one block pair, 2 views of 32x24
+Reuses the tiny CPU model of tests/tiny_match.py (64x64 UV grid, one block pair, 2 views of 32x24
 pixels, no Sapiens). Needs assets/ for the template mesh and the pretrained config.
 
     CUDA_VISIBLE_DEVICES= conda run -n match python -m pytest -q tests/test_image_token_temporal.py
@@ -15,16 +15,11 @@ import torch
 if not Path('assets').exists():
     pytest.skip('assets/ is missing; see the worktree section of CLAUDE.md', allow_module_level=True)
 
-from test_temporal_match_model import (  # noqa: E402
-    ATOL, as_batch, as_clip, build, per_frame_twin, synthetic_frame)
+from tiny_match import (  # noqa: E402
+    ATOL, as_batch, as_clip, build, load_pretrained, per_frame_twin, save_checkpoint)
+from training_configs import parsed_options  # noqa: E402
 
 SWITCH_ON = dict(temporal=True, clip_length=3, temporal_image_tokens=True)
-
-
-@pytest.fixture(scope='module')
-def frames():
-  num_verts = build(temporal=False).num_verts
-  return [synthetic_frame(num_verts, seed) for seed in range(3)]
 
 
 def names_with(model, part: str) -> set[str]:
@@ -66,13 +61,13 @@ def per_frame_match_with(model):
 
 
 @torch.no_grad()
-def test_with_the_switch_on_each_frame_of_a_clip_equals_per_frame_match_at_init(frames):
+def test_with_the_switch_on_each_frame_of_a_clip_equals_per_frame_match_at_init(tiny_frames):
   model = build(**SWITCH_ON)
   per_frame = per_frame_match_with(model)
 
-  clip_out = model.forward_gaussians(as_clip(frames), return_tempeh_xyz=True)
+  clip_out = model.forward_gaussians(as_clip(tiny_frames), return_tempeh_xyz=True)
 
-  for t, frame in enumerate(frames):
+  for t, frame in enumerate(tiny_frames):
     for k, v in per_frame.forward_gaussians(as_batch(frame), return_tempeh_xyz=True).items():
       torch.testing.assert_close(clip_out[k][:, t], v, atol=ATOL, rtol=0, msg=f'{k} frame {t}')
 
@@ -87,13 +82,13 @@ def randomize(model, part: str, seed=1):
 
 
 @torch.no_grad()
-def test_the_image_token_sublayers_alone_carry_information_between_frames(frames):
+def test_the_image_token_sublayers_alone_carry_information_between_frames(tiny_frames):
   # UV-token sublayers stay zero (no-ops); only the image-token ones and the frame embedding are nonzero.
   model = build(**SWITCH_ON)
   randomize(model, 'temporal_img')
 
-  before = model.forward_gaussians(as_clip(frames))
-  changed = copy.deepcopy(frames)
+  before = model.forward_gaussians(as_clip(tiny_frames))
+  changed = copy.deepcopy(tiny_frames)
   changed[0]['image'] = 1. - changed[0]['image']
   after = model.forward_gaussians(as_clip(changed))
 
@@ -114,9 +109,9 @@ def clip_grads(frames, grad_checkpoint):
   return value.detach(), {n: p.grad for n, p in model.named_parameters() if p.requires_grad}
 
 
-def test_gradient_checkpointing_keeps_the_image_token_sublayers_forward_and_gradients(frames):
-  value, grads = clip_grads(frames, grad_checkpoint=False)
-  value_ckpt, grads_ckpt = clip_grads(frames, grad_checkpoint=True)
+def test_gradient_checkpointing_keeps_the_image_token_sublayers_forward_and_gradients(tiny_frames):
+  value, grads = clip_grads(tiny_frames, grad_checkpoint=False)
+  value_ckpt, grads_ckpt = clip_grads(tiny_frames, grad_checkpoint=True)
 
   torch.testing.assert_close(value_ckpt, value, atol=1e-6, rtol=1e-5)
   assert any(g.abs().max() > 0 for n, g in grads.items() if 'temporal_img' in n)
@@ -126,13 +121,13 @@ def test_gradient_checkpointing_keeps_the_image_token_sublayers_forward_and_grad
 
 @pytest.mark.parametrize('grad_checkpoint', [False, True])
 def test_running_the_temporal_sublayers_in_chunks_of_token_positions_changes_nothing(
-    frames, grad_checkpoint, monkeypatch):
+    tiny_frames, grad_checkpoint, monkeypatch):
   # The full-size image-token sublayer has 61,440 token positions per frame; it runs a bounded number of
   # them at a time. Here 24 image and 16 UV positions per frame, so chunks of 5 split both.
   from match.models.networks import attention
-  value, grads = clip_grads(frames, grad_checkpoint)
+  value, grads = clip_grads(tiny_frames, grad_checkpoint)
   monkeypatch.setattr(attention, 'TEMPORAL_CHUNK_POSITIONS', 5)
-  value_chunked, grads_chunked = clip_grads(frames, grad_checkpoint)
+  value_chunked, grads_chunked = clip_grads(tiny_frames, grad_checkpoint)
 
   torch.testing.assert_close(value_chunked, value, atol=1e-6, rtol=1e-5)
   for n, g in grads.items():
@@ -140,7 +135,6 @@ def test_running_the_temporal_sublayers_in_chunks_of_token_positions_changes_not
 
 
 def test_a_per_frame_checkpoint_loads_into_the_ablation_with_fresh_image_token_sublayers(tmp_path):
-  from test_temporal_match_model import load_pretrained, save_checkpoint
   per_frame = build(seed=1, temporal=False)
   folder = save_checkpoint(per_frame.state_dict(), tmp_path / 'ckpt')
   model = build(seed=2, **SWITCH_ON)
@@ -163,7 +157,6 @@ def test_the_ablation_config_differs_from_the_stage1_temporal_config_only_in_the
     stage1_config, ablation_config, ablation_folder):
   import dataclasses
 
-  from test_clip_training import parsed_options
   stage1 = parsed_options(f'configs/match/{stage1_config}')
   ablation = parsed_options(f'configs/match/{ablation_config}')
   differing = {f.name for f in dataclasses.fields(stage1) if getattr(stage1, f.name) != getattr(ablation, f.name)}
