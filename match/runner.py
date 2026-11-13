@@ -212,6 +212,7 @@ class MatchRunner:
             "l1",
             "ssim",
             "lpips",
+            "temporal_loss",
         ]:
             weight_name = k + "_weight"
             weight_val = getattr(self.opt, weight_name)
