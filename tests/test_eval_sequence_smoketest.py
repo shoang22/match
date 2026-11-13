@@ -1,6 +1,7 @@
 """What the smoke run's videos show (#8 to #12): panel timing, the orbit, the TEMPEH mesh's alignment and the preview.
 
-Checked on the smoke run and on the flicker-only run (#28), whose fixed view is an input camera.
+Checked on the smoke run, on the flicker-only run (#28), whose fixed view is an input camera, and on the temporal
+smoke run (#35, temporal MATCH in sliding windows).
 The output contract shared with the full run (timing, metrics, plots, config copies) is in
 test_eval_sequence_outputs.py. Skipped until each run has been done (run commands in the headers of
 configs/match/eval_sequence_smoketest.gin and eval_sequence_flicker_smoketest.gin); EVAL_SEQUENCE_SMOKE_DIR and
@@ -9,7 +10,8 @@ EVAL_SEQUENCE_FLICKER_DIR check runs written elsewhere.
 import numpy as np
 import pytest
 
-from eval_sequence_runs import FLICKER, GRID_COLS, LABEL_H, PANEL_H, PANEL_W, SMOKE, decode_video, load_metrics
+from eval_sequence_runs import (FLICKER, GRID_COLS, LABEL_H, PANEL_H, PANEL_W, SMOKE, TEMPORAL_SMOKE, decode_video,
+                                load_metrics)
 
 # Panels by their grid position (the labels name the fixed view's camera, and the real panel says whether it is
 # held out or an input).
@@ -17,7 +19,7 @@ PREDICTION, REAL, TEMPEH, ORBIT = range(4)
 STATIC_PANELS = [PREDICTION, REAL, TEMPEH]
 
 
-@pytest.fixture(scope='module', params=[SMOKE, FLICKER], ids=lambda run: run.name)
+@pytest.fixture(scope='module', params=[SMOKE, FLICKER, TEMPORAL_SMOKE], ids=lambda run: run.name)
 def run(request):
     return request.param
 

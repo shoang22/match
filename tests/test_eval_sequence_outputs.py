@@ -4,6 +4,9 @@ Smoke run: the first 3 frames of SEN_a_good_morrow_to_you_my_boy, held-out camer
 Full run: all 40 frames, held-out cameras 402040, 401905, 402031.
 Flicker-only run: the smoke run's frames with no held-out cameras; input camera 401875 is the fixed view, and
 there are temporal and jitter scores but no image-quality scores.
+Temporal runs: the smoke run with temporal MATCH in sliding windows (3 frames, and 6 frames) and in block windows
+(6 frames). They must write everything a per-frame run writes; their extras are checked in
+test_eval_sequence_temporal_outputs.py.
 Each run's tests skip until it has been done (see eval_sequence_runs.py). The video content of the smoke and
 flicker-only runs is checked further in test_eval_sequence_smoketest.py.
 """
@@ -12,8 +15,9 @@ import math
 import pytest
 from PIL import Image
 
-from eval_sequence_runs import (FLICKER, FPS, FULL, IMAGE_METRICS_PLOT, PIX_FMT, PREVIEW_FPS, SMOKE, VIDEO_H, VIDEO_W,
-                                config_bindings, load_metrics, probe_video)
+from eval_sequence_runs import (FLICKER, FPS, FULL, IMAGE_METRICS_PLOT, PIX_FMT, PREVIEW_FPS, SMOKE, TEMPORAL_BLOCK6,
+                                TEMPORAL_SLIDING6, TEMPORAL_SMOKE, VIDEO_H, VIDEO_W, config_bindings, load_metrics,
+                                probe_video)
 from tce049 import FRAME_IDS_PER_SECOND, INPUT_CAMERA_IDS, REPO_ROOT
 
 # The spec's metrics and whether a higher value is better. Runs may record more.
@@ -26,7 +30,8 @@ TEMPEH_JITTER_RANGE_MM = (0.5, 20.0)
 N_WORST_FRAMES = 3
 
 
-@pytest.fixture(scope='module', params=[SMOKE, FULL, FLICKER], ids=lambda run: run.name)
+@pytest.fixture(scope='module', params=[SMOKE, FULL, FLICKER, TEMPORAL_SMOKE, TEMPORAL_SLIDING6, TEMPORAL_BLOCK6],
+                ids=lambda run: run.name)
 def run(request):
     return request.param
 

@@ -11,6 +11,7 @@ from typing import Callable, Iterable, Iterator, Protocol
 import torch
 
 from match.sequence_eval import texture_filter
+from match.sequence_eval.windows import window_slot
 
 
 @dataclass
@@ -107,3 +108,76 @@ class TextureFilterPredictor:
         if clash:
             raise KeyError(f'The inner predictor returned metrics sections the texture filter writes: {clash}')
         return {**inner, **sections}
+
+
+def _on_cpu(batch: dict) -> dict:
+    return type(batch)({k: v.cpu() if isinstance(v, torch.Tensor) else v for k, v in batch.items()})
+
+
+def stack_window(batches: list[dict]) -> dict:
+    """A clip batch (B=1) from consecutive frames' batches (B=1), as `default_collate` makes it from one clip
+    sample: tensors (1, T, ...), `frame` as T lists of one ID, other lists (subject, sequence) from the first frame."""
+    first = batches[0]
+    clip = type(first)()
+    for k, v in first.items():
+        if isinstance(v, torch.Tensor):
+            clip[k] = torch.stack([b[k] for b in batches], dim=1)
+        elif k == 'frame':
+            clip[k] = [list(b[k]) for b in batches]
+        else:
+            clip[k] = v
+    return clip
+
+
+class WindowedPredictor:
+    """A temporal model run on windows of consecutive frames, keeping each frame from one window and slot
+    (the window plan in match/sequence_eval/windows.py: 'sliding' or 'block').
+
+    Frame t is emitted as soon as its window has been read and run. Each window runs once; the frames of
+    the current window and its outputs are held on the CPU.
+    """
+
+    def __init__(self, forward_clip: Callable[[dict], dict], clip_length: int, mode: str):
+        """forward_clip: a clip batch (B=1, T frames; see `stack_window`) -> its masked Gaussians with a time
+          axis, dict of (1, T, 1, C, L, 1).
+        clip_length: window length T (a shorter sequence runs as one shorter window).
+        mode: 'sliding' or 'block'."""
+        window_slot(0, None, clip_length, mode)  # validates the mode and length
+        self.forward_clip, self.clip_length, self.mode = forward_clip, clip_length, mode
+        self.per_frame, self.window_length, self.n_windows = {}, None, 0
+
+    def predict(self, batches):
+        held, window = {}, None  # frame index -> batch on the CPU; (WindowSlot, its Gaussians on the CPU)
+        t = n = 0  # next frame to emit, frames read so far
+        for batch in batches:
+            held[n] = _on_cpu(batch)
+            n += 1
+            while t < n:
+                slot = window_slot(t, None, self.clip_length, self.mode)
+                if slot.start + slot.length > n:
+                    break  # its window is not read yet
+                frame, window = self._emit(held, window, t, slot)
+                yield frame
+                t += 1
+        while t < n:  # the sequence has ended, so its last windows shift inward
+            frame, window = self._emit(held, window, t, window_slot(t, n, self.clip_length, self.mode))
+            yield frame
+            t += 1
+
+    def _emit(self, held, window, t, slot):
+        """Frame t from its window (run unless it is the current one); drops frames no later window needs."""
+        if window is None or (window[0].start, window[0].length) != (slot.start, slot.length):
+            clip = stack_window([held[i] for i in range(slot.start, slot.start + slot.length)])
+            window = (slot, {k: v.cpu() for k, v in self.forward_clip(clip).items()})
+            self.n_windows += 1
+        self.window_length = slot.length
+        self.per_frame[held[t]['frame'][0]] = {
+            'window_start': slot.start, 'window_start_frame': held[slot.start]['frame'][0], 'slot': slot.slot}
+        frame = PredictedFrame(t, held[t], {k: v[:, slot.slot] for k, v in window[1].items()})
+        for i in [i for i in held if i < slot.start]:  # later frames' windows start at slot.start or later
+            del held[i]
+        return frame, window
+
+    def metrics(self):
+        return {'inference': {'mode': self.mode, 'clip_length': self.clip_length, 'window_length': self.window_length,
+                              'n_windows': self.n_windows, 'per_frame': self.per_frame}}

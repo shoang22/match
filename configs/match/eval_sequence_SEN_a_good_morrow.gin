@@ -77,6 +77,20 @@ OrbitPanel.loops = %ORBIT_LOOPS
 TEXTURE_FILTER_SIGMA = None
 build_predictor.texture_filter_sigma = %TEXTURE_FILTER_SIGMA
 
+# Temporal MATCH (#32, #35). TEMPORAL = True builds the temporal model; a per-frame checkpoint (MODEL_PATH, CKPT) then
+# loads with fresh temporal parameters, i.e. temporal MATCH at initialization. The temporal model runs on windows of
+# clip_length frames (Options.clip_length, 4) and keeps each frame from one window:
+#   INFERENCE_MODE = 'sliding'  the window from one frame before to two after (shifted inward at the sequence ends)
+#   INFERENCE_MODE = 'block'    non-overlapping windows, all frames kept (stress test for flicker at window boundaries)
+#   INFERENCE_MODE = 'per_frame' one forward pass per frame
+# None = 'sliding' for a temporal checkpoint, 'per_frame' otherwise. Windowed runs add metrics.json's inference section
+# {mode, clip_length, window_length, n_windows, per_frame {frame: {window_start, window_start_frame, slot}}}.
+# The texture filter is refused for a temporal checkpoint or windowed inference. Example (temporal MATCH at init, sliding):
+#   --gin_bindings "TEMPORAL = True" --gin_bindings "OUT_DIR = 'experiments/match/eval_sequence/<new dir>'"
+TEMPORAL = False
+INFERENCE_MODE = None
+build_predictor.inference_mode = %INFERENCE_MODE
+
 condor_name/join_strings.strings = ['.', %NAME, '-', %CKPT]
 cmd/join_strings.strings = ['torchrun --standalone --nnodes=1 --nproc-per-node=', %N_GPUS, ' scripts/match/eval_sequence.py --gin_configs __CONFIG__']
 
@@ -92,6 +106,7 @@ Options:
   base_folder = %OUT_DIR
   load_pretrained_model = %MODEL_PATH
   load_pretrained_model_ckpt = %CKPT
+  temporal = %TEMPORAL
 
   val_loader_params = [
     {

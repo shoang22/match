@@ -312,7 +312,13 @@ class MatchModel(nn.Module):
     # sapiens feature extraction
     sapiens_features = None
     if self.use_sapiens_features:
-      sapiens_features = self.sapiens_encoder(einops.rearrange(input_images*.5 + .5, 'b v c h w -> (b v) c h w')) 
+      images_flat = einops.rearrange(input_images*.5 + .5, 'b v c h w -> (b v) c h w')
+      tiles = (self.opt.sapiens_prediction_tiles_sqrt or 1) ** 2
+      # One frame at a time when a frame's views fill whole Sapiens tiles: the tiles are then the same as
+      # in a batch, the encoder's activations don't grow with the batch (a clip folds T frames into it),
+      # and the compiled encoder keeps one input shape.
+      chunk = V if V % tiles == 0 else B * V
+      sapiens_features = torch.cat([self.sapiens_encoder(c) for c in images_flat.split(chunk)])
       sapiens_features = einops.rearrange(sapiens_features, '(b v) c h w -> b v c h w', v=V)
 
     if self.feature_net is None:
@@ -545,9 +551,12 @@ class MatchModel(nn.Module):
     b, v, _, h, w = data["uv"].shape
     uv = data["uv"].to(torch.float16)  # computing correspondences in float16 to save memory
     downsample_for_computation = self.opt.img_patch_size // 2
-    correspondence_idcs, correspondence_scores = (
+    # One frame at a time: each frame's correspondences depend only on its own UV renders, and the search
+    # holds several GB per frame at full size (b x v x UV patches x image patches boxes), which a clip
+    # folded into the batch would multiply by T.
+    correspondences = [
         uv_util.get_img_uv_patch_correspondences(
-            uv,
+            uv[i:i + 1],
             self.opt.uv_res,
             uv_patch_size=self.opt.uv_patch_size,
             img_patch_size=self.opt.img_patch_size,
@@ -555,8 +564,11 @@ class MatchModel(nn.Module):
             downsample_for_computation=downsample_for_computation,
             return_uv_patch_mask=False,
         )
-    )
-    correspondence_scores = correspondence_scores.to(dtype)
+        for i in range(b)
+    ]
+    correspondence_idcs = torch.cat([idcs for idcs, _ in correspondences])
+    correspondence_scores = torch.cat([scores for _, scores in correspondences]).to(dtype)
+    del correspondences
     x_img = self._get_img_tokens(data, dtype)
     x_uv, uv_xyz, uv_rgb = self._get_uv_tokens(data, dtype=dtype, correspondence_idcs=correspondence_idcs, correspondence_scores=correspondence_scores, return_uv_xyz_rgb=True)
     x_uv, x_img = self.transformer(

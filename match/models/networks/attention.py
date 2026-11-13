@@ -140,6 +140,28 @@ class CorrespondenceAwareAttention(nn.Module):
         patches for each uv patch (B, nv_uv, nh_uv, n_neighbors)
       context: (B, C, D) not used
     """
+    # One sample at a time: every attention sequence (a uv token and its image neighbours) lies within one
+    # sample, and its activations (~3.5 GB per full-size sample) would otherwise grow with the batch, which
+    # holds T frames per clip.
+    outputs = [
+        self._forward_sample(
+            uv_tokens[i:i + 1], img_tokens[i:i + 1], correspondence_idcs[i:i + 1],
+            correspondence_scores[i:i + 1], context)
+        for i in range(uv_tokens.shape[0])
+    ]
+    if len(outputs) == 1:
+      return outputs[0]
+    return tuple(torch.cat(parts) for parts in zip(*outputs))
+
+  def _forward_sample(
+      self,
+      uv_tokens: torch.Tensor,
+      img_tokens: torch.Tensor,
+      correspondence_idcs: torch.Tensor,
+      correspondence_scores: torch.Tensor,
+      context: Optional[Tensor] = None,
+  ):
+    """`forward` for a batch of one sample."""
     d = uv_tokens.shape[-1]
     n_imgtokens = img_tokens.shape[1]
     b, nv_uv, nh_uv, n_neighbors = correspondence_idcs.shape
