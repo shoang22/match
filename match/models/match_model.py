@@ -19,6 +19,14 @@ import torchmetrics
 from functools import partial
 
 
+def checkpoint_allow_missing(opt: Options):
+  """Missing checkpoint keys a pretrained load accepts: temporal MATCH's fresh temporal parameters.
+
+  For per-frame MATCH this is None and the load follows `opt.load_pretrained_model_strict` as before.
+  """
+  return is_temporal_parameter if opt.temporal else None
+
+
 class MatchModel(nn.Module):
 
   def __init__(self, opt: Options):
@@ -81,6 +89,8 @@ class MatchModel(nn.Module):
         opt.dim,
         opt.num_heads,
         llama_style=opt.llama_style,
+        temporal=opt.temporal,
+        clip_len=opt.clip_length,
     )
     if opt.grad_checkpoint:
       self.transformer.set_grad_checkpointing()
@@ -133,7 +143,11 @@ class MatchModel(nn.Module):
     for k, v in ava2flame_mapping.items():
         ava2flame_mapping[k] = torch.from_numpy(v)
     self.ava2flame_mapping = ava2flame_mapping
-      
+
+    if opt.temporal and opt.temporal_freeze_spatial:
+      for name, param in self.named_parameters():
+        param.requires_grad_(is_temporal_parameter(name))
+
     
   def to(self, *args, **kwargs):
     device, dtype, non_blocking, convert_to_format = torch._C._nn._parse_to(*args, **kwargs)
@@ -476,24 +490,42 @@ class MatchModel(nn.Module):
   ):
     """Args:
 
-      data: A dictionary of data.
+      data: A dictionary of data: a batch of frames (image (B, V, 3, H, W)) or a batch of clips with a
+        time axis after the batch axis (image (B, T, V, 3, H, W); see `MatchBatch.fold_clip`).
       dtype: The data type to use.
       return_tempeh_xyz: also return the TEMPEH part of each texel's position under 'tempeh_xyz'.
 
     returns:
-      dict with keys:
+      dict with keys (a clip batch gets a time axis after the batch axis, (B, T, 1, C, H, W)):
       - xyz: (B, 1, 3, H, W)
       - rgb: (B, 1, 3, H, W)
-      - scale: (B, 1, 1, H, W)
-      - rotation: (B, 1, 3, H, W)
+      - scale: (B, 1, 3, H, W)
+      - rotation: (B, 1, 4, H, W)
       - opacity: (B, 1, 1, H, W)
       - uv: (B, 1, 3, H, W)
       - tempeh_xyz: (B, 1, 3, H, W), only if return_tempeh_xyz. The TEMPEH coarse surface point at each texel,
         which xyz adds the predicted offset to (xyz - tempeh_xyz is the offset). Zeros without skip_connection.
+      and, with return_masked_gaussians, the masked Gaussians ((B, (T,) 1, C, L, 1)).
     """
-    b, v, _, h, w = data["uv"].shape
     data = data_util.MatchBatch(data)
-    
+    if not data.is_clip:
+      gaussian_features = self._forward_frame_gaussians(data, dtype, 1, return_tempeh_xyz)
+      if return_masked_gaussians:
+        return gaussian_features, self.mask_gaussians(gaussian_features)
+      return gaussian_features
+
+    frames, clip_len = data.fold_clip()
+    gaussian_features = self._forward_frame_gaussians(frames, dtype, clip_len, return_tempeh_xyz)
+    clip_gaussian_features = data_util.unfold_clip(gaussian_features, clip_len)
+    if return_masked_gaussians:
+      return clip_gaussian_features, data_util.unfold_clip(self.mask_gaussians(gaussian_features), clip_len)
+    return clip_gaussian_features
+
+  def _forward_frame_gaussians(self, data: data_util.MatchBatch, dtype: torch.dtype, clip_len: int,
+                               return_tempeh_xyz: bool = False):
+    """Gaussian textures (B * T, 1, C, H, W) for a batch of frames in which every `clip_len` consecutive
+    samples are the frames of one clip."""
+    b, v, _, h, w = data["uv"].shape
     if self.opt.num_input_views is not None:
       device = data['uv'].device
       if not self.training:
@@ -533,6 +565,7 @@ class MatchModel(nn.Module):
         correspondence_idcs=correspondence_idcs,
         correspondence_scores=correspondence_scores,
         nviews=v,
+        clip_len=clip_len,
     )
     x_uv = self.ln_out(x_uv)
     gaussian_features = self._uv_tokens_to_gaussian_feature_textures(x_uv, uv_xyz=uv_xyz, uv_rgb=uv_rgb)
@@ -541,12 +574,7 @@ class MatchModel(nn.Module):
       gaussian_features['tempeh_xyz'] = (
           einops.rearrange(uv_xyz, 'b c h w -> b 1 c h w').to(xyz.dtype) if self.skip_connection
           else torch.zeros_like(xyz))
-
-
-    if return_masked_gaussians:
-      return gaussian_features, self.mask_gaussians(gaussian_features)
-    else:
-      return gaussian_features
+    return gaussian_features
 
   def forward(self, *args, func_name="compute_loss", **kwargs):
     # To support different forward functions for models wrapped by `accelerate`

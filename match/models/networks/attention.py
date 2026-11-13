@@ -259,6 +259,61 @@ class CorrespondenceAwareAttention(nn.Module):
     return uv_tokens, img_tokens
 
 
+class TemporalAttention(nn.Module):
+  """Temporal attention sublayer of divided space-time attention (TimeSformer).
+
+  Every token position attends only to the same position in the other frames of its clip. For UV tokens a
+  position is a UV patch, which is the same surface point in every frame. The sublayer has its own RMSNorm
+  and attention weights. Its output projection is zero-initialized, so it is an exact no-op at
+  initialization. The frame embedding is added to the normalized input only, never to the residual stream.
+  """
+
+  def __init__(
+      self,
+      dim: int,
+      num_heads: int,
+      qk_norm: bool = True,
+      norm_eps: float = 1e-5,
+  ):
+    super().__init__()
+    self.norm = RMSNorm(dim, norm_eps)
+    self.attn = Attention(dim, num_heads, qk_norm)
+    nn.init.zeros_(self.attn.wo.weight)
+
+  def forward(self, x: Tensor, clip_len: int, frame_embedding: Tensor):
+    """Args:
+
+    x: (B * T, N, D), frame t of clip b at sample b * T + t
+    clip_len: T
+    frame_embedding: (T, D), one vector per frame slot
+
+    Returns:
+      the residual (B * T, N, D)
+    """
+    h = einops.rearrange(self.norm(x), "(b t) n d -> b t n d", t=clip_len)
+    h = h + frame_embedding[:, None].to(h)
+    b, _, n, _ = h.shape
+    h = self.attn(einops.rearrange(h, "b t n d -> (b n) t d"))
+    return einops.rearrange(h, "(b n) t d -> (b t) n d", b=b, n=n)
+
+
+def is_temporal_parameter(name: str) -> bool:
+  """True for parameters (state-dict keys) of the temporal sublayers and the frame embedding."""
+  return any(part.startswith("temporal_") for part in name.split("."))
+
+
+def _add_temporal_residual(
+    temporal_attn: Optional[TemporalAttention],
+    x: Tensor,
+    clip_len: int,
+    frame_embedding: Optional[Tensor],
+):
+  """Applies a block's temporal sublayer with its residual. Clips of one frame skip it (per-frame path)."""
+  if temporal_attn is None or clip_len == 1:
+    return x
+  return x + temporal_attn(x, clip_len, frame_embedding)
+
+
 class FeedForward(nn.Module):
 
   def __init__(
@@ -344,9 +399,14 @@ class CorrespondenceAwareLLaMaTransformerBlock(nn.Module):
       multiple_of: int = 256,
       ffn_dim_multiplier: Optional[float] = None,
       norm_eps: float = 1e-5,
+      temporal: bool = False,
   ):
     super().__init__()
 
+    # temporal sublayer over UV tokens (divided space-time attention), run before the spatial attention
+    self.temporal_uv = (
+        TemporalAttention(dim, num_heads, qk_norm, norm_eps) if temporal else None
+    )
     self.norm1 = RMSNorm(dim, norm_eps)
     self.attn = CorrespondenceAwareAttention(
         dim, num_heads, qk_norm
@@ -368,7 +428,17 @@ class CorrespondenceAwareLLaMaTransformerBlock(nn.Module):
       correspondence_idcs: Tensor,
       correspondence_scores: Tensor,
       context: Optional[Tensor] = None,
+      clip_len: int = 1,
+      frame_embedding: Optional[Tensor] = None,
   ):
+    """Args (besides the spatial inputs, with T folded into B):
+
+    clip_len: T; consecutive groups of T samples are the frames of one clip
+    frame_embedding: (T, D), added to the temporal sublayer's normalized input
+    """
+    uv_tokens = _add_temporal_residual(
+        self.temporal_uv, uv_tokens, clip_len, frame_embedding
+    )
     res_uv_tokens, res_img_tokens = self.attn(
         uv_tokens=self.norm1(uv_tokens),
         img_tokens=self.norm1(img_tokens),
@@ -404,9 +474,14 @@ class PerViewLLaMaTransformerBlock(nn.Module):
       multiple_of: int = 256,
       ffn_dim_multiplier: Optional[float] = None,
       norm_eps: float = 1e-5,
+      temporal: bool = False,
   ):
     super().__init__()
 
+    # temporal sublayer over UV tokens (divided space-time attention), run before the spatial attention
+    self.temporal_uv = (
+        TemporalAttention(dim, num_heads, qk_norm, norm_eps) if temporal else None
+    )
     self.norm1 = RMSNorm(dim, norm_eps)
     self.attn = Attention(dim, num_heads, qk_norm)
     self.norm2 = RMSNorm(dim, norm_eps)
@@ -424,17 +499,24 @@ class PerViewLLaMaTransformerBlock(nn.Module):
       img_tokens: Tensor,
       nviews: int,
       context: Optional[Tensor] = None,
+      clip_len: int = 1,
+      frame_embedding: Optional[Tensor] = None,
   ):
     """Args:
 
     uv_tokens: (B, nv_uv*nh_uv, D)
     img_tokens: (B, v * nv_img * nh_img, D)
     nviews: number of views
+    clip_len: T; consecutive groups of T samples in B are the frames of one clip
+    frame_embedding: (T, D), added to the temporal sublayer's normalized input
 
     Returns:
       uv_tokens: (B, nv_uv*nh_uv, D)
       img_tokens: (B, v * nv_img * nh_img, D)
     """
+    uv_tokens = _add_temporal_residual(
+        self.temporal_uv, uv_tokens, clip_len, frame_embedding
+    )
     out_x = list()
     for x, v in zip([uv_tokens, img_tokens], [1, nviews]):
       x = einops.rearrange(x, "b (v n) d -> (b v) n d", v=v)
@@ -530,7 +612,11 @@ class CorrespondenceAwareTransformer(nn.Module):
       llama_style: bool = True,
       use_cross_attention: bool = False,
       context_dim: Optional[int] = None,
+      temporal: bool = False,
+      clip_len: int = 1,
   ):
+    """With `temporal`, every block gets a temporal sublayer over UV tokens and the transformer gets one
+    learned embedding per frame slot, `clip_len` slots, zero-initialized."""
     super().__init__()
 
     if not llama_style:
@@ -545,12 +631,19 @@ class CorrespondenceAwareTransformer(nn.Module):
               num_heads,
               use_cross_attention,
               context_dim,
+              temporal=temporal,
           )
       )
       module_list.append(
-          PerViewBlock(dim, num_heads, use_cross_attention, context_dim)
+          PerViewBlock(
+              dim, num_heads, use_cross_attention, context_dim, temporal=temporal
+          )
       )
     self.blocks = nn.ModuleList(module_list)
+
+    self.temporal_frame_embedding = (
+        nn.Parameter(torch.zeros(clip_len, dim)) if temporal else None
+    )
 
     self.grad_checkpointing = False
 
@@ -565,7 +658,18 @@ class CorrespondenceAwareTransformer(nn.Module):
       correspondence_scores: Tensor,
       nviews: int,
       context: Optional[Tensor] = None,
+      clip_len: int = 1,
   ):
+    """Spatial passes run with the clip's time axis folded into the batch: samples b * T ... b * T + T - 1
+    are the frames of clip b, T = `clip_len`."""
+    frame_embedding = None
+    if self.temporal_frame_embedding is not None and clip_len > 1:
+      if clip_len > len(self.temporal_frame_embedding):
+        raise ValueError(
+            f"clip of {clip_len} frames, but the model has"
+            f" {len(self.temporal_frame_embedding)} frame slots (clip_len)"
+        )
+      frame_embedding = self.temporal_frame_embedding[:clip_len]
     for block in self.blocks:
       if block.is_correspondences_aware:
         block_inputs = dict(
@@ -582,6 +686,7 @@ class CorrespondenceAwareTransformer(nn.Module):
         )
       else:
         raise ValueError("Unsupported block type.")
+      block_inputs.update(clip_len=clip_len, frame_embedding=frame_embedding)
 
       if self.grad_checkpointing:
         uv_tokens, img_tokens = torch.utils.checkpoint.checkpoint(

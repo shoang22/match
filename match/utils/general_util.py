@@ -1,6 +1,7 @@
 from argparse import Namespace
 import os
-from typing import Any, Dict, List, Optional
+import pathlib
+from typing import Any, Callable, Dict, List, Optional
 
 import accelerate as acc
 import einops
@@ -181,12 +182,48 @@ def get_ckpt_path(ckpt_dir: str, ckpt_iter: int | None) -> str | None:
   return f"{ckpt_dir}/{ckpt_iter:06d}".replace("//", "/")
 
 
+def check_ckpt_keys(
+    ckpt_path: str,
+    model: torch.nn.Module,
+    allow_missing: Callable[[str], bool],
+):
+  """Raises if the checkpoint has a key the model lacks, or lacks a model key that `allow_missing` rejects."""
+  from safetensors import safe_open
+
+  files = sorted(pathlib.Path(ckpt_path).glob("*.safetensors"))
+  if not files:
+    raise FileNotFoundError(f"no *.safetensors in {ckpt_path}")
+  ckpt_keys = set()
+  for f in files:
+    with safe_open(str(f), framework="pt") as st:
+      ckpt_keys.update(st.keys())
+  model_keys = set(model.state_dict().keys())
+  unexpected = sorted(ckpt_keys - model_keys)
+  missing = sorted(k for k in model_keys - ckpt_keys if not allow_missing(k))
+  if unexpected or missing:
+    raise RuntimeError(
+        f"checkpoint {ckpt_path} does not match the model: unexpected keys"
+        f" {unexpected}, missing keys {missing}"
+    )
+
+
 def load_ckpt(
     ckpt_path: str,
     model: Optional[torch.nn.Module] = None,
     accelerator: Optional[acc.Accelerator] = None,
     strict: bool = True,
+    allow_missing: Optional[Callable[[str], bool]] = None,
 ) -> torch.nn.Module:
+  """Loads model weights from a checkpoint folder.
+
+  With `allow_missing`, the load is strict except for missing model keys it accepts (e.g. the fresh
+  temporal parameters when loading a per-frame checkpoint into temporal MATCH), whatever `strict` says.
+  """
+  if allow_missing is not None:
+    if os.path.exists(f"{ckpt_path}/zero_to_fp32.py"):
+      raise NotImplementedError("allow_missing is not supported for DeepSpeed checkpoints")
+    check_ckpt_keys(ckpt_path, model, allow_missing)
+    strict = False
   if not os.path.exists(f"{ckpt_path}/zero_to_fp32.py"):
     acc.load_checkpoint_and_dispatch(model, ckpt_path, strict=strict)
   else:  # from DeepSpeed
