@@ -68,6 +68,41 @@ def _zip_members(path):
         return set(z.namelist())
 
 
+def _camera_assets(capture, camera):
+    """(asset, zip path, frame -> zip member) of an Ava-256 camera's image and foreground mask."""
+    return [
+        ('image', capture.camera_zip_path(camera), lambda frame: f'cam{camera}/{int(frame):06d}.avif'),
+        ('mask', Path(capture.dir) / 'foreground_masks' / f'cam{camera}.zip', lambda frame: f'{int(frame):06d}.avif'),
+    ]
+
+
+def camera_frames_on_disk(capture, camera, frames):
+    """The frames (of `frames`) for which an Ava-256 camera has both an image and a mask on disk."""
+    available = set(frames)
+    for _, zip_path, member in _camera_assets(capture, camera):
+        try:
+            members = _zip_members(zip_path)
+        except (FileNotFoundError, zipfile.BadZipFile):
+            return set()
+        available = {frame for frame in available if member(frame) in members}
+    return available
+
+
+def missing_tempeh(capture, frame, input_cameras):
+    """What the dataset needs of a frame's TEMPEH prediction and doesn't find: the coarse mesh ('verts.npy') and the
+    UV maps ('uv_cam<ID>.png') of the input cameras. Nothing is needed of a directory the dataset isn't given."""
+    missing = []
+    sequence = None
+    for directory, files in [(capture.coarse_mesh_directory, ['verts.npy']),
+                             (capture.uv_directory, [f'uv_cam{c}.png' for c in input_cameras])]:
+        if directory is None:
+            continue
+        sequence = sequence or capture.get_sequenceid(frame)
+        frame_dir = Path(directory, capture.sid, sequence, frame)
+        missing += [str(frame_dir / f) for f in files if not (frame_dir / f).exists()]
+    return missing
+
+
 def check_heldout_cameras(capture, heldout_camera_ids, frames):
     """Raises HeldOutCameraError unless every held-out camera has calibration, an image and a mask for every frame.
 
@@ -82,11 +117,7 @@ def check_heldout_cameras(capture, heldout_camera_ids, frames):
     for camera in heldout_camera_ids:
         if camera not in calibrated:
             problems.append(f'camera {camera}: calibration missing (no entry in {capture.krt_file_path})')
-        assets = [
-            ('image', capture.camera_zip_path(camera), lambda frame: f'cam{camera}/{int(frame):06d}.avif'),
-            ('mask', Path(capture.dir) / 'foreground_masks' / f'cam{camera}.zip', lambda frame: f'{int(frame):06d}.avif'),
-        ]
-        for asset, zip_path, member in assets:
+        for asset, zip_path, member in _camera_assets(capture, camera):
             try:
                 members = _zip_members(zip_path)
             except (FileNotFoundError, zipfile.BadZipFile) as e:
