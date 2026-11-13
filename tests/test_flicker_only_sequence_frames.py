@@ -13,8 +13,9 @@ if not Path('assets').exists():
 
 import synthetic_capture as synth  # noqa: E402
 from match import data  # noqa: E402
-from match.sequence_eval.frames import (FixedViewCameraError, SequenceFrames, check_fixed_view_input_camera,  # noqa: E402
-                                        check_heldout_cameras, frame_ids, segment_ids, single_capture)
+from match.sequence_eval.frames import (  # noqa: E402
+    FixedViewCameraError, SequenceFrames, check_fixed_view_input_camera, check_heldout_cameras, frame_ids, segment_ids,
+    single_capture)
 
 pytestmark = pytest.mark.usefixtures('fail_instead_of_hanging')
 

@@ -1,0 +1,13 @@
+# PYTHONPATH=$(pwd) PYOPENGL_PLATFORM=egl conda run -n match --no-capture-output torchrun --standalone --nnodes=1 --nproc-per-node=1 scripts/match/eval_sequence.py --gin_configs configs/match/eval_sequence_flicker_smoketest.gin
+# Flicker-only smoke test of the sequence evaluation (#28): the smoke run's 3 frames of SEN_a_good_morrow_to_you_my_boy with no held-out cameras,
+# as on a capture whose cameras are all inputs. The fixed view is input camera 401875 (the [0, 0] input, closest to frontal).
+# The run writes temporal (flicker) and geometric-jitter scores but no image-quality scores, and labels the real panel as an input camera.
+# Same model, inputs and data as the smoke config. A few minutes on one 24 GB GPU.
+# Check the outputs afterwards: conda run -n match python -m pytest tests/test_eval_sequence_outputs.py tests/test_eval_sequence_smoketest.py
+
+include 'configs/match/eval_sequence_smoketest.gin'
+NAME = 'eval_sequence-flicker_smoketest'
+OUT_DIR = 'experiments/match/eval_sequence/flicker_smoketest'
+HELDOUT_CAMERA_IDS = []
+HELDOUT_CAMERA_ANGLES = None
+FIXED_VIEW_INPUT_CAMERA = '401875'

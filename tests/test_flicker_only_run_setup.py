@@ -54,3 +54,16 @@ def test_a_flicker_only_run_scores_flicker_and_jitter_but_not_image_quality():
 def test_a_run_with_heldout_cameras_also_scores_image_quality():
     kinds = [type(c) for c in eval_sequence.build_metric_collectors(HELDOUT)]
     assert kinds == [seq_metrics.ImageMetrics, seq_metrics.TemporalMetrics, seq_metrics.GeometricJitter]
+
+
+def test_a_run_without_heldout_cameras_needs_a_fixed_view_input_camera(tmp_path):
+    with pytest.raises(ValueError, match='fixed_view_input_camera'):
+        eval_sequence.eval_sequence(None, out_dir=str(tmp_path / 'out'), heldout_camera_ids=[])
+    assert not (tmp_path / 'out').exists()
+
+
+def test_a_fixed_view_input_camera_is_only_for_runs_without_heldout_cameras(tmp_path):
+    with pytest.raises(ValueError, match='fixed_view_input_camera'):
+        eval_sequence.eval_sequence(None, out_dir=str(tmp_path / 'out'), heldout_camera_ids=['402040'],
+                                    fixed_view_input_camera='401875')
+    assert not (tmp_path / 'out').exists()

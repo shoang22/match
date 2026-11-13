@@ -58,6 +58,10 @@ AVA_SAPIENS_SEG_DIR = None
 # nearest cameras with every frame. The run stops with HeldOutCameraError if any frame is missing.
 HELDOUT_CAMERA_IDS = ['402040', '401905', '402031']
 HELDOUT_CAMERA_ANGLES = [[7.7, 24.0], [-31.0, 4.7], [75.6, -1.5]]
+# Flicker-only run (#28): set HELDOUT_CAMERA_IDS = [], HELDOUT_CAMERA_ANGLES = None and this to an input camera ID. That input
+# camera is then the fixed view, and the run writes temporal and jitter scores but no image-quality scores
+# (see configs/match/eval_sequence_flicker_smoketest.gin).
+FIXED_VIEW_INPUT_CAMERA = None
 
 # Orbit panel: the camera-sweep path (default angle range and intrinsics), one pose per 24 fps video frame, starting
 # frontal. It goes round ORBIT_LOOPS whole times over the grid video (once: 128 frames, 5.3 s), so it never stops mid-orbit.
@@ -71,6 +75,7 @@ cmd/join_strings.strings = ['torchrun --standalone --nnodes=1 --nproc-per-node='
 eval_sequence:
   out_dir = %OUT_DIR
   heldout_camera_ids = %HELDOUT_CAMERA_IDS
+  fixed_view_input_camera = %FIXED_VIEW_INPUT_CAMERA
   capture_fps = %CAPTURE_FPS
   fps = 24
   preview_fps = %PREVIEW_FPS
