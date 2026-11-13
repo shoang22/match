@@ -674,11 +674,22 @@ class MatchModel(nn.Module):
       force_white_bg: bool = False,
       return_masked_gaussians: bool = False,
   ):
+    """MATCH's losses on a batch of frames, or on a batch of clips (image (B, T, V, 3, H, W)).
+
+    A clip's frames are separate samples for rendering and every loss term, and its loss is the sum of
+    its frames' losses: per-frame MATCH's loss on each frame, summed over the clip and averaged over the
+    clips of the batch. The logged terms and metrics stay means over frames, comparable with per-frame
+    training. Outputs with a batch axis (images, masked Gaussians) have one sample per frame (B * T).
+    """
     outputs = {}
 
     color_name = "image"
 
-    gaussian_parameters = self.forward_gaussians(data, dtype)
+    data = data_util.MatchBatch(data)
+    clip_len = 1
+    if data.is_clip:
+      data, clip_len = data.fold_clip()
+    gaussian_parameters = self._forward_frame_gaussians(data, dtype, clip_len)
     masked_gaussian_parameters = self.mask_gaussians(gaussian_parameters)
     pred_verts = self.gaussians2mesh(gaussian_parameters) * 1000.0  # in mm
 
@@ -1003,7 +1014,8 @@ class MatchModel(nn.Module):
           loss_lpips, loss_weights["lpips"], drop_zero_weights=True
       )
 
-    outputs["loss"] = loss
+    # every term is a mean over the B * T frames, so T times it is the clips' mean of the per-frame sums
+    outputs["loss"] = loss * clip_len
 
     # Metric: PSNR, SSIM and LPIPS
     if do_render:
