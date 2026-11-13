@@ -40,6 +40,10 @@ FRAME_STRIDE = 1  # applied within the segment; the 4TB frame list already has e
 NFRAMES = -1      # all frames of the segment
 # Frame IDs per second. Ava-256 frame IDs advance 90 times per second: the cameras record at 30 fps and the 4TB tier keeps
 # 7.5 fps (Martinez et al. 2024, Sec. 2.1 and Table 1) while its frame IDs step by 12, so consecutive frames are 2/15 s apart.
+# Only right for segments whose frame IDs step by 12: every 2023 capture (TCE049 included) and every SEN_* segment. The EXP_*
+# and GAZ_* segments of the captures from 2021-08-10 to 2022-09-01 step by 4 IDs at the same 7.5 fps (IDs advance 30 times per
+# second there), so evaluating one of those needs CAPTURE_FPS = 30, or its video plays 3x too fast (#29). Check the step in the
+# capture's frame_list.csv.
 CAPTURE_FPS = 90
 PREVIEW_FPS = 10  # source frames per second in preview.mp4 (the source has 7.5 per second)
 # TEMPEH coarse meshes and UV maps for every frame of the segment (#6)
