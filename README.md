@@ -121,7 +121,7 @@ PYTHONPATH=$(pwd) python condor/run.py configs/tempeh/save_predictions_calibrate
 PYOPENGL_PLATFORM=egl PYTHONPATH=$(pwd) python condor/run.py configs/match/save_camera_sweeps_calibrated.gin
 ```
 - TEMPEH writes `<out_dir>/calibrated/<subject>/<sequence>/<frame>/{verts.npy, uv_cam<ID>.png, vis.jpg}`. `verts.npy` is in the calibration's frame and units. The UV maps are rendered in the (Ava-aspect) image, as for Ava.
-- MATCH writes `<OUT_DIR>/<frame>_input.jpg` (input grid), `<frame>_pred.jpg` (renders of the input views) and `<frame>_sweep.mp4`. As for Ava and NeRSemble, an input view whose UV map is missing gets zeros; the dataset logs a warning on the 1st, 10th, 100th, ... such view.
+- MATCH writes `<OUT_DIR>/<frame>_input.jpg` (input grid), `<frame>_pred.jpg` (renders of the input views) and `<frame>_sweep.mp4`. As for Ava and NeRSemble, an input view whose UV map is missing gets zeros; the dataset logs a warning for each such view.
 - Keep the gin config's path free of spaces: `condor/run.py` does not quote it. Paths inside the configs may contain spaces.
 
 Optional values, not in the shipped configs. Add them to the TEMPEH `--datasets` dict and to the MATCH `dataset_kwargs`:
