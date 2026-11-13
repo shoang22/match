@@ -2,9 +2,11 @@
 
 SMOKE and FULL render held-out cameras; FLICKER is the flicker-only run (no held-out cameras, an input camera as
 the fixed view, no image-quality scores) on SMOKE's frames.
+BACKGROUND1_FLICKER and BACKGROUND1_TEMPORAL are flicker-only runs on the 30 frames of the `background 1` capture,
+with per-frame MATCH (#29) and with temporal MATCH in sliding windows (#36).
 The runs need the GPU, the pretrained model and the data, so their output tests skip until the run has been
 done (run commands in the configs' headers). EVAL_SEQUENCE_SMOKE_DIR / EVAL_SEQUENCE_FULL_DIR /
-EVAL_SEQUENCE_FLICKER_DIR point the tests at a run written elsewhere, e.g. with
+EVAL_SEQUENCE_FLICKER_DIR (and the other EVAL_SEQUENCE_*_DIR below) point the tests at a run written elsewhere, e.g. with
 --gin_bindings "OUT_DIR = 'experiments/match/eval_sequence/<name>'".
 """
 import json
@@ -16,8 +18,9 @@ import ffmpeg
 import numpy as np
 import pytest
 
-from tce049 import (FIXED_VIEW_CAMERA, FRAME_IDS_PER_SECOND, FRONTAL_INPUT_CAMERA, HELDOUT_CAMERAS, REPO_ROOT,
-                    SEGMENT_FRAMES)
+import background1
+from tce049 import (FIXED_VIEW_CAMERA, FRAME_IDS_PER_SECOND, FRONTAL_INPUT_CAMERA, HELDOUT_CAMERAS, INPUT_CAMERA_IDS,
+                    REPO_ROOT, SEGMENT, SEGMENT_FRAMES)
 
 FPS = 24
 PREVIEW_FPS = 10
@@ -57,6 +60,15 @@ class EvalRun:
     fixed_view_kind: str = 'heldout'  # 'input' in a flicker-only run
     panels: tuple = tuple(PANELS)
     plots: tuple = tuple(PLOTS)
+    # The capture: the defaults are TCE049's SEN_a_good_morrow_to_you_my_boy segment.
+    segments: tuple = (SEGMENT,)
+    input_cameras: tuple = tuple(INPUT_CAMERA_IDS)  # the same on every frame, in camera-angle slot order
+    capture_fps: int = FRAME_IDS_PER_SECOND  # CAPTURE_FPS: frame IDs per second (Ava) or frames per second
+    frame_spacing_s: float = FRAME_SPACING_S  # between consecutive source frames
+    holds: tuple = (3, 4)  # grid-video frames per source frame: frame_spacing_s * 24 fps, rounded either way
+    # Mean TEMPEH jitter per triple, roughly 0.3x to 3x the range measured (a unit slip is 10x or 1000x).
+    # TCE049: 1.2 to 5.9 mm per triple (mean 2.86 mm, from verts.npy).
+    tempeh_jitter_range_mm: tuple = (0.5, 20.0)
 
     @property
     def metrics_sections(self):
@@ -70,7 +82,7 @@ class EvalRun:
 
     @property
     def duration(self):
-        return len(self.frames) * FRAME_SPACING_S
+        return len(self.frames) * self.frame_spacing_s
 
 
 SMOKE = EvalRun(
@@ -101,6 +113,26 @@ FLICKER = EvalRun(
     frames=SEGMENT_FRAMES[:3], heldout_cameras=[], n_output_frames=10,
     fixed_view_camera=FRONTAL_INPUT_CAMERA, fixed_view_kind='input',
     panels=tuple(panel_labels(FRONTAL_INPUT_CAMERA, 'input')), plots=tuple(FLICKER_PLOTS))
+
+
+def background1_run(name, config):
+    """A flicker-only run on all 30 frames of `background 1`, where every camera is an input; its output folder is
+    experiments/match/eval_sequence/<name> unless EVAL_SEQUENCE_<NAME>_DIR is set."""
+    return EvalRun(
+        name=name, config=config,
+        out_dir_setting=os.environ.get(f'EVAL_SEQUENCE_{name.upper()}_DIR', f'experiments/match/eval_sequence/{name}'),
+        frames=background1.FRAMES, heldout_cameras=[], n_output_frames=72,  # 30 frames 0.1 s apart at 24 fps
+        fixed_view_camera=background1.FRONTAL_INPUT_CAMERA, fixed_view_kind='input',
+        panels=tuple(panel_labels(background1.FRONTAL_INPUT_CAMERA, 'input')), plots=tuple(FLICKER_PLOTS),
+        segments=(background1.CAPTURE,), input_cameras=tuple(background1.INPUT_CAMERA_IDS),
+        capture_fps=background1.CAPTURE_FPS, frame_spacing_s=1 / background1.CAPTURE_FPS, holds=(2, 3),
+        # TEMPEH jitter on `background 1` is 0.52 to 1.44 mm per triple (mean 0.91 mm; #29).
+        tempeh_jitter_range_mm=(0.15, 5.0))
+
+
+# Per-frame MATCH (#29) and temporal MATCH at initialization in sliding windows of 4 (#36).
+BACKGROUND1_FLICKER = background1_run('background1_flicker', 'configs/match/eval_sequence_background1_flicker.gin')
+BACKGROUND1_TEMPORAL = background1_run('background1_temporal', 'configs/match/eval_sequence_background1_temporal.gin')
 
 
 def load_metrics(run: EvalRun):

@@ -1,0 +1,17 @@
+# PYTHONPATH=$(pwd) PYOPENGL_PLATFORM=egl conda run -n match --no-capture-output torchrun --standalone --nnodes=1 --nproc-per-node=1 scripts/match/eval_sequence.py --gin_configs configs/match/eval_sequence_background1_temporal.gin
+# `background 1` pilot of windowed inference (#36): the flicker-only evaluation of all 30 frames of `background 1`
+# (eval_sequence_background1_flicker.gin: fixed view input camera 0, no held-out cameras) with temporal MATCH at
+# initialization, i.e. the pretrained per-frame checkpoint loaded into the temporal model with fresh (no-op) temporal
+# sublayers, in sliding windows of 4 frames (27 windows). Its scores should equal the per-frame run's within the fp16
+# batch-size noise (tests/test_eval_sequence_temporal_outputs.py).
+# For a trained temporal checkpoint, also bind MODEL_PATH and CKPT.
+#
+# Needs the masks and TEMPEH predictions of eval_sequence_background1_flicker.gin steps 1 and 2. Whole 24 GB GPU, Xvfb :99.
+# Check the outputs afterwards:
+#   conda run -n match python -m pytest tests/test_eval_sequence_outputs.py tests/test_eval_sequence_temporal_outputs.py
+
+include 'configs/match/eval_sequence_background1_flicker.gin'
+NAME = 'eval_sequence-background1_temporal'
+OUT_DIR = 'experiments/match/eval_sequence/background1_temporal'
+TEMPORAL = True
+INFERENCE_MODE = 'sliding'
