@@ -28,7 +28,7 @@ from match.utils import geo_util
 import einops
 import numpy as np
 from PIL import Image
-from match.utils import data_util
+from match.utils import clip_util, data_util
 from torchvision.transforms import InterpolationMode
 
 
@@ -547,7 +547,7 @@ class BaseSingleCaptureDataset(torch.utils.data.Dataset):
         extra_camera_ids = self.get_extra_camera_ids(frame_ids[0], avoid_camera_ids=invalid | set(camera_ids))
         frames = [self.fetch_data_from_disk(frame_id=frame_id, camera_ids=camera_ids, extra_camera_ids=extra_camera_ids)
                   for frame_id in frame_ids]
-        return stack_clip(frames)
+        return clip_util.stack_frames(frames, time_dim=0)
 
     def get_image_path(self, frame_id:str, camera_id:str):
         raise NotImplementedError
@@ -569,20 +569,6 @@ class BaseSingleCaptureDataset(torch.utils.data.Dataset):
     def get_allcameras(self) -> Set[str]:
         return set(self.cameras)
 
-
-
-def stack_clip(frames: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Combines the single-frame samples of a clip: tensors stacked on a new leading time axis, `frame` as the
-    list of frame ids, other values (subject, sequence) taken from the first frame."""
-    clip = dict()
-    for k, v in frames[0].items():
-        if isinstance(v, torch.Tensor):
-            clip[k] = torch.stack([f[k] for f in frames])
-        elif k == 'frame':
-            clip[k] = [f[k] for f in frames]
-        else:
-            clip[k] = v
-    return clip
 
 
 class BaseMultiCaptureDataset(torch.utils.data.Dataset):

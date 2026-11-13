@@ -12,6 +12,7 @@ import torch
 
 from match.sequence_eval import texture_filter
 from match.sequence_eval.windows import window_slot
+from match.utils import clip_util
 
 INFERENCE_MODES = ('per_frame', 'sliding', 'block')
 
@@ -147,16 +148,7 @@ def _on_cpu(batch: dict) -> dict:
 def stack_window(batches: list[dict]) -> dict:
     """A clip batch (B=1) from consecutive frames' batches (B=1), as `default_collate` makes it from one clip
     sample: tensors (1, T, ...), `frame` as T lists of one ID, other lists (subject, sequence) from the first frame."""
-    first = batches[0]
-    clip = type(first)()
-    for k, v in first.items():
-        if isinstance(v, torch.Tensor):
-            clip[k] = torch.stack([b[k] for b in batches], dim=1)
-        elif k == 'frame':
-            clip[k] = [list(b[k]) for b in batches]
-        else:
-            clip[k] = v
-    return clip
+    return clip_util.stack_frames(batches, time_dim=1)
 
 
 class WindowedPredictor:
