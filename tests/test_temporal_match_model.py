@@ -16,8 +16,11 @@ import torch
 if not Path('assets').exists():
     pytest.skip('assets/ is missing; see the worktree section of CLAUDE.md', allow_module_level=True)
 
-from match.models.match_model import MatchModel  # noqa: E402
+from safetensors.torch import save_file  # noqa: E402
+
+from match.models.match_model import MatchModel, checkpoint_allow_missing  # noqa: E402
 from match.options import Options  # noqa: E402
+from match.utils import general_util  # noqa: E402
 
 N_VIEWS = 2
 HEIGHT, WIDTH = 32, 24
@@ -171,3 +174,52 @@ def test_only_the_temporal_parameters_train():
 def test_per_frame_match_trains_every_parameter():
   model = build(temporal=False)
   assert all(p.requires_grad for p in model.parameters())
+
+
+def save_checkpoint(state_dict: dict, folder: Path) -> Path:
+  """A checkpoint folder as the runner saves it (model.safetensors)."""
+  folder.mkdir(parents=True)
+  save_file({k: v.contiguous() for k, v in state_dict.items()}, str(folder / 'model.safetensors'))
+  return folder
+
+
+def load_pretrained(model: MatchModel, folder: Path, strict: bool):
+  """Loads a checkpoint the way MatchRunner.load_checkpoint does for this model."""
+  return general_util.load_ckpt(str(folder), model, strict=strict,
+                                allow_missing=checkpoint_allow_missing(model.opt))
+
+
+@pytest.mark.parametrize('strict', [True, False])
+def test_a_per_frame_checkpoint_loads_into_the_temporal_model_with_fresh_temporal_parameters(tmp_path, strict):
+  per_frame = build(seed=1, temporal=False)
+  folder = save_checkpoint(per_frame.state_dict(), tmp_path / 'ckpt')
+  model = build(seed=2, temporal=True, clip_len=3)
+  fresh = {k: v.clone() for k, v in model.state_dict().items() if k not in per_frame.state_dict()}
+
+  load_pretrained(model, folder, strict)
+
+  loaded = model.state_dict()
+  for k, v in per_frame.state_dict().items():
+    torch.testing.assert_close(loaded[k], v, atol=0, rtol=0, msg=k)
+  for k, v in fresh.items():
+    torch.testing.assert_close(loaded[k], v, atol=0, rtol=0, msg=k)
+
+
+@pytest.mark.parametrize('strict', [True, False])
+def test_an_unexpected_non_temporal_key_fails_the_temporal_load(tmp_path, strict):
+  state = build(temporal=False).state_dict()
+  state['transformer.blocks.0.attn.extra.weight'] = torch.zeros(3)
+  folder = save_checkpoint(state, tmp_path / 'ckpt')
+
+  with pytest.raises(Exception, match='attn.extra.weight'):
+    load_pretrained(build(temporal=True, clip_len=3), folder, strict)
+
+
+@pytest.mark.parametrize('strict', [True, False])
+def test_a_missing_non_temporal_key_fails_the_temporal_load(tmp_path, strict):
+  state = build(temporal=False).state_dict()
+  del state['out_xyz.weight']
+  folder = save_checkpoint(state, tmp_path / 'ckpt')
+
+  with pytest.raises(Exception, match='out_xyz.weight'):
+    load_pretrained(build(temporal=True, clip_len=3), folder, strict)

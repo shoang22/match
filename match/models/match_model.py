@@ -19,6 +19,14 @@ import torchmetrics
 from functools import partial
 
 
+def checkpoint_allow_missing(opt: Options):
+  """Missing checkpoint keys a pretrained load accepts: temporal MATCH's fresh temporal parameters.
+
+  For per-frame MATCH this is None and the load follows `opt.load_pretrained_model_strict` as before.
+  """
+  return is_temporal_parameter if opt.temporal else None
+
+
 class MatchModel(nn.Module):
 
   def __init__(self, opt: Options):
