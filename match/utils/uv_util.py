@@ -206,7 +206,8 @@ def get_img_uv_patch_correspondences(
       uv_img_patch_scores, dim=-1, descending=True
   )[
       ..., :n_neighbors
-  ]  # idcs (flattened) of top n_neighbors matching image patches (B, nv_uv, nh_uv, n_neighbors)
+  ].clone()  # idcs (flattened) of top n_neighbors matching image patches (B, nv_uv, nh_uv, n_neighbors);
+  # a copy, so that the full ranking (int64, 1.9 GiB per 12-view frame at uv_res 1024) is freed
 
   uv_img_patch_match_scores = torch.gather(
       input=uv_img_patch_scores, index=uv_img_patch_match_idcs, dim=-1

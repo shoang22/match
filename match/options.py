@@ -27,6 +27,11 @@ class Options:
   load_pretrained_model: str | None = None
   load_pretrained_model_ckpt: int = -1
   load_pretrained_model_strict: bool = True
+  # A fine-tune takes only the pretrained model's weights (loaded when the runner is built): with no
+  # checkpoint of its own in base_folder/checkpoints it starts at step 0 with a fresh optimizer and LR
+  # schedule. Otherwise (False) such a run resumes the pretrained run's full training state: optimizer,
+  # scheduler, RNG and step. None: a fine-tune for temporal MATCH, not for per-frame MATCH.
+  fine_tune: bool | None = None
   initial_eval: bool = False
   log_level: str = "INFO"
   train_total_batch_size: int | None = None  # will be calculated later
@@ -114,6 +119,10 @@ class Options:
   clip_length: int = 4
   # With `temporal`, only the temporal parameters train; everything else has gradients disabled.
   temporal_freeze_spatial: bool = True
+  # Learning rate of the spatial (non-temporal) weights when they train (temporal_freeze_spatial = False):
+  # they become a second optimizer group, the temporal parameters keep optimizer['lr']. None: one group at
+  # optimizer['lr']. Must stay None while the spatial weights are frozen or without `temporal`.
+  temporal_spatial_lr: float | None = None
 
   ## Rendering
   render_type: Literal[

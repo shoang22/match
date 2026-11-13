@@ -82,3 +82,12 @@ def test_correspondences_are_each_uv_patchs_best_scoring_image_patches():
     best = expected.sort(dim=-1, descending=True).values[..., :n_neighbors]
     torch.testing.assert_close(scores, best)  # and they are the best ones, best first
     assert (expected > 0).sum(-1).min() > 0  # every UV patch matches something, so the check isn't vacuous
+
+
+def test_the_matches_do_not_keep_the_full_ranking_alive():
+    idcs, scores = get_img_uv_patch_correspondences(
+        synthetic_uv_renders(seed=0), UV_RES, uv_patch_size=UV_PATCH, img_patch_size=IMG_PATCH, n_neighbors=10,
+        downsample_for_computation=DOWNSAMPLE, return_uv_patch_mask=False)
+
+    for t in (idcs, scores):  # a view into the argsort result would hold all V * image patches entries per UV patch
+        assert t.untyped_storage().nbytes() == t.numel() * t.element_size()
