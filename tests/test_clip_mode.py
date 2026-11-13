@@ -66,3 +66,50 @@ def test_every_frame_of_a_clip_uses_the_same_cameras_even_when_one_frame_lacks_o
     assert clip['camera'].shape == (2, 6)
     assert clip['camera'][0].tolist() == clip['camera'][1].tolist()
     assert 0 not in clip['camera'][0].tolist()
+
+
+def test_clips_never_cross_from_one_capture_into_the_next(tmp_path):
+    root, masks = tmp_path / 'root', tmp_path / 'masks'
+    synth.write_capture(root / 'take1', masks / 'take1', nframes=3)
+    synth.write_capture(root / 'take2', masks / 'take2', nframes=2)
+    dataset = build_calibrated(synth.SyntheticCapture(root=root, mask_dir=masks), clip_length=2)
+
+    clips = [(dataset[i]['sequence'], dataset[i]['frame']) for i in range(len(dataset))]
+    assert clips == [('take1', ['000000', '000001']), ('take1', ['000001', '000002']),
+                     ('take2', ['000000', '000001'])]
+
+
+from tce049 import AVA_ROOT, SEGMENT, SEGMENT_FRAMES  # noqa: E402
+
+needs_ava_data = pytest.mark.skipif(
+    not AVA_ROOT.exists(), reason='needs data/ava-256 with capture TCE049 (symlink it into a worktree)'
+)
+# The segment after SEN_a_good_morrow_to_you_my_boy in TCE049's frame list starts at frame 33365, 12 IDs after
+# the sentence's last frame, 33353: frame IDs run on across the boundary, only seg_id changes.
+NEXT_SEGMENT_FIRST_FRAME = '33365'
+
+
+def tce049_capture(**kwargs):
+    dataset = data.get_dataset_cls('ava256')(
+        root_path=str(AVA_ROOT), height=786, width=512, training=None, only_subjects=['TCE049'],
+        head_crop=False, require_verts=False, require_segmentation=False, **kwargs,
+    )
+    (capture_dataset,) = dataset.single_capture_datasets.values()
+    return dataset, capture_dataset
+
+
+@needs_ava_data
+def test_ava_clips_of_one_segment_step_through_it_at_the_clip_stride():
+    dataset, capture_dataset = tce049_capture(segment=SEGMENT, clip_length=4, clip_stride=2)
+    assert len(dataset) == 40 - 6  # a clip spans 6 frame-list rows; the sentence has 40
+    assert capture_dataset.get_clip(0) == SEGMENT_FRAMES[0:7:2]
+    assert capture_dataset.get_clip(len(dataset) - 1) == SEGMENT_FRAMES[-7::2]
+
+
+@needs_ava_data
+def test_ava_clips_never_cross_into_the_next_segment():
+    _, capture_dataset = tce049_capture(clip_length=4, clip_stride=2)
+    clips = [capture_dataset.get_clip(i) for i in range(len(capture_dataset))]
+    assert SEGMENT_FRAMES[-7::2] in clips  # the sentence's last clip ...
+    assert not any(SEGMENT_FRAMES[-1] in clip and NEXT_SEGMENT_FIRST_FRAME in clip for clip in clips)
+    assert [NEXT_SEGMENT_FIRST_FRAME, '33389', '33413', '33437'] in clips  # ... and the next segment's first
