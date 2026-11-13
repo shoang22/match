@@ -65,6 +65,14 @@ HELDOUT_CAMERA_ANGLES = [[7.7, 24.0], [-31.0, 4.7], [75.6, -1.5]]
 ORBIT_LOOPS = 1
 OrbitPanel.loops = %ORBIT_LOOPS
 
+# Temporal texture filter baseline (#31): per-frame MATCH with its Gaussian textures (position, colour, scale, opacity,
+# rotation) smoothed texel by texel over frames by a centred Gaussian of TEXTURE_FILTER_SIGMA frames, cut at 4 sigma and
+# renormalized at the sequence ends. None = off (plain per-frame MATCH). metrics.json gets a texture_filter section
+# {sigma, radius_frames, filtered} when it runs. Sweep it with a new output folder per sigma, e.g.
+#   --gin_bindings "TEXTURE_FILTER_SIGMA = 1.0" --gin_bindings "OUT_DIR = 'experiments/match/eval_sequence/SEN_texture_filter_sigma1'"
+TEXTURE_FILTER_SIGMA = None
+build_predictor.texture_filter_sigma = %TEXTURE_FILTER_SIGMA
+
 condor_name/join_strings.strings = ['.', %NAME, '-', %CKPT]
 cmd/join_strings.strings = ['torchrun --standalone --nnodes=1 --nproc-per-node=', %N_GPUS, ' scripts/match/eval_sequence.py --gin_configs __CONFIG__']
 
