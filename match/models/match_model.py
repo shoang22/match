@@ -110,6 +110,8 @@ class MatchModel(nn.Module):
     )
 
     # Transformer backbone
+    if opt.temporal_image_tokens and not opt.temporal:
+      raise ValueError('temporal_image_tokens adds image-token sublayers to the temporal model; it needs temporal = True')
     self.transformer = CorrespondenceAwareTransformer(
         opt.num_blocks,
         opt.dim,
@@ -117,6 +119,7 @@ class MatchModel(nn.Module):
         llama_style=opt.llama_style,
         temporal=opt.temporal,
         clip_len=opt.clip_length,
+        temporal_image_tokens=opt.temporal_image_tokens,
     )
     if opt.grad_checkpoint:
       self.transformer.set_grad_checkpointing()
