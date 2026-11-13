@@ -87,7 +87,7 @@ class NersembleSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
         super().__init__(**kwargs)    
         self.sequence_id = self.dir.name
 
-    def __len__(self):
+    def num_frames(self) -> int:
         return len(self.frame_ids)
 
     @property

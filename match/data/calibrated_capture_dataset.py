@@ -190,7 +190,7 @@ class CalibratedSingleCaptureDataset(base_dataset.BaseSingleCaptureDataset):
     def get_frameid(self, idx: int) -> str:
         return self.frame_ids[idx]
 
-    def __len__(self):
+    def num_frames(self) -> int:
         return len(self.frame_ids)
 
     def get_sequenceid(self, frame_id: str) -> str:
