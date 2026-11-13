@@ -1,7 +1,9 @@
-"""Output contract of the sequence evaluation, checked on both the smoke run and the full run.
+"""Output contract of the sequence evaluation, checked on the smoke run, the full run and the temporal smoke run.
 
 Smoke run: the first 3 frames of SEN_a_good_morrow_to_you_my_boy, held-out camera 402040.
 Full run: all 40 frames, held-out cameras 402040, 401905, 402031.
+Temporal smoke run: the smoke run with temporal MATCH in sliding windows, so it must write everything a
+per-frame run writes (its own extras are checked in test_eval_sequence_temporal_outputs.py).
 Each run's tests skip until it has been done (see eval_sequence_runs.py). The smoke run's video content is
 checked further in test_eval_sequence_smoketest.py.
 """
@@ -10,8 +12,8 @@ import math
 import pytest
 from PIL import Image
 
-from eval_sequence_runs import (FPS, FULL, PANELS, PIX_FMT, PLOTS, PREVIEW_FPS, SMOKE, VIDEO_H, VIDEO_W,
-                                config_bindings, load_metrics, probe_video)
+from eval_sequence_runs import (FPS, FULL, PANELS, PIX_FMT, PLOTS, PREVIEW_FPS, SMOKE, TEMPORAL_SMOKE, VIDEO_H,
+                                VIDEO_W, config_bindings, load_metrics, probe_video)
 from tce049 import FIXED_VIEW_CAMERA, FRAME_IDS_PER_SECOND, INPUT_CAMERA_IDS, REPO_ROOT
 
 # The spec's metrics and whether a higher value is better. Runs may record more.
@@ -24,7 +26,7 @@ TEMPEH_JITTER_RANGE_MM = (0.5, 20.0)
 N_WORST_FRAMES = 3
 
 
-@pytest.fixture(scope='module', params=[SMOKE, FULL], ids=lambda run: run.name)
+@pytest.fixture(scope='module', params=[SMOKE, FULL, TEMPORAL_SMOKE], ids=lambda run: run.name)
 def run(request):
     return request.param
 
